@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Camera Management</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 0;
+            background-color: #F0F4FF;
+            display: flex;
+            min-height: 100vh;
+            flex-direction: column;
+        }
+
+        .container {
+            display: flex;
+            flex: 1;
+        }
+
+        .sidebar {
+            width: 250px;
+            background-color: white;
+            padding: 20px;
+            box-shadow: 2px 0 5px rgba(0, 0, 0, 0.1);
+        }
+
+        .sidebar img {
+            width: 50px;
+            margin-bottom: 30px;
+        }
+
+        .sidebar ul {
+            list-style-type: none;
+            padding: 0;
+        }
+
+        .sidebar ul li {
+            margin-bottom: 20px;
+        }
+
+        .sidebar ul li a {
+            text-decoration: none;
+            color: #333;
+            display: flex;
+            align-items: center;
+        }
+
+        .sidebar ul li a svg {
+            margin-right: 10px;
+        }
+
+        .sidebar ul li a:hover {
+            color: #007BFF;
+        }
+
+        .content {
+            flex: 1;
+            padding: 30px;
+            background-color: #F0F4FF;
+        }
+
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 30px;
+        }
+
+        .header h2 {
+            font-size: 28px;
+            margin: 0;
+        }
+
+        .header .actions {
+            display: flex;
+            align-items: center;
+        }
+
+        .header .actions button {
+            background-color: #007BFF;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            margin-left: 10px;
+            cursor: pointer;
+        }
+
+        .header .actions button:hover {
+            background-color: #0056b3;
+        }
+
+        .search-bar {
+            margin-bottom: 20px;
+        }
+
+        .search-bar input {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+        }
+
+        .table-container {
+            background-color: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        table th,
+        table td {
+            padding: 15px;
+            text-align: left;
+        }
+
+        table th {
+            background-color: #F0F4FF;
+            font-weight: bold;
+        }
+
+        table tr:nth-child(even) {
+            background-color: #F9F9F9;
+        }
+
+        table tr:hover {
+            background-color: #F1F1F1;
+        }
+
+        .table-action svg {
+            cursor: pointer;
+            margin-left: 10px;
+        }
+
+        .table-action svg:hover {
+            color: #007BFF;
+        }
+
+        .disabled {
+            opacity: 0.5;
+            pointer-events: none;
+        }
+
+        .status-inactive {
+            color: #ff0000;
+        }
+
+        .status-active {
+            color: #00ff00;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <div class="sidebar">
+            <img src="https://www.neuwebtech.com/wp-content/uploads/2020/10/FullLogo_Transparent.png" alt="Neuweb Logo">
+            <ul>
+                <li><a href="#"><span>🏠</span>&nbsp;&nbsp;Home</a></li>
+                <li><a href="#"><span>🌐</span>&nbsp;&nbsp;Analytical</a></li>
+                <li><a href="#"><span>📅</span>&nbsp;&nbsp;Calendar</a></li>
+                <li><a href="#"><span>👤</span>&nbsp;&nbsp;User Profile</a></li>
+            </ul>
+        </div>
+        <div class="content">
+            <div class="header">
+                <h2>Camera Controls</h2>
+                <div class="actions">
+                    <button>+ Add New</button>
+                </div>
+            </div>
+            <div class="search-bar">
+                <input type="text" placeholder="🔍 Search Camera">
+            </div>
+            <div class="table-container">
+                <table>
+                    <thead>
+                        <tr>
+                            <th><input type="checkbox"></th>
+                            <th>Camera Name</th>
+                            <th>Location</th>
+                            <th>Status</th>
+                            <th>Action</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr class="disabled">
+                            <td><input type="checkbox" disabled></td>
+                            <td>parking</td>
+                            <td>Sydney, Australia</td>
+                            <td class="status-inactive">inactive</td>
+                            <td class="table-action">
+                                <span>👁️</span>
+                                <span>🗑️</span>
+                            </td>
+                        </tr>
+                        <tr>
+                            <td><input type="checkbox"></td>
+                            <td>shoes</td>
+                            <td>Boston, USA</td>
+                            <td class="status-active">active</td>
+                            <td class="table-action">
+                                <span onclick="viewCamera('2eb15471-cf55-41aa-b879-c12bd9c6ea6f', 'shoes')">👁️</span>
+                                <span>🗑️</span>
+                            </td>
+                        </tr>
+                        <tr class="disabled">
+                            <td><input type="checkbox" disabled></td>
+                            <td>women</td>
+                            <td>Miami, USA</td>
+                            <td class="status-inactive">inactive</td>
+                            <td class="table-action">
+                                <span>👁️</span>
+                                <span>🗑️</span>
+                            </td>
+                        </tr>
+                        <tr class="disabled">
+                            <td><input type="checkbox" disabled></td>
+                            <td>shop</td>
+                            <td>Tokyo, Japan</td>
+                            <td class="status-inactive">inactive</td>
+                            <td class="table-action">
+                                <span>👁️</span>
+                                <span>🗑️</span>
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Check if the user is logged in
+        if (localStorage.getItem('loggedIn') !== 'true') {
+            alert('You are not logged in!');
+            window.location.href = 'index.html';
+        }
+
+        // Function to handle the camera view
+        function viewCamera(cameraId, primaryTable) {
+            // Redirect to camera_stream.html with cameraId and primaryTable as query params
+            window.location.href = `camera_stream.html?cameraId=${cameraId}&primaryTable=${primaryTable}`;
+        }
+    </script>
+
+</body>
+
+</html>

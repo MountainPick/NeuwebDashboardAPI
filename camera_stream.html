@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Camera Stream</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            height: 100vh;
+            align-items: center;
+            justify-content: center;
+            background-color: #F0F4FF;
+        }
+
+        .container {
+            text-align: center;
+        }
+
+        #videoStream {
+            max-width: 100%;
+            height: auto;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+        }
+
+        h1 {
+            color: #333;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <h1 id="cameraTitle">Camera Stream</h1>
+        <img id="videoStream" src="" alt="Live Video Stream">
+    </div>
+
+    <script>
+        // Get camera details from URL parameters
+        const urlParams = new URLSearchParams(window.location.search);
+        const cameraId = urlParams.get('cameraId');
+        const primaryTable = urlParams.get('primaryTable');
+
+        // Update the camera title
+        document.getElementById('cameraTitle').textContent = `Camera Stream`;
+
+        // Get the current host
+        const currentHost = window.location.hostname;
+
+        // Connect to WebSocket using the current host
+        const ws = new WebSocket(`ws://${currentHost}:8000/ws`);
+
+        const img = document.getElementById('videoStream');
+
+        ws.onmessage = function (event) {
+            img.src = 'data:image/jpeg;base64,' + event.data;
+        };
+
+        ws.onclose = function (event) {
+            console.log('WebSocket closed. Attempting to reconnect...');
+            setTimeout(function () {
+                window.location.reload();
+            }, 1000);
+        };
+
+        ws.onerror = function (error) {
+            console.error('WebSocket Error: ', error);
+        };
+    </script>
+</body>
+
+</html>
