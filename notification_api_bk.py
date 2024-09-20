@@ -34,7 +34,6 @@ app.add_middleware(
 
 # Store active connections
 active_connections: list[WebSocket] = []
-latest_frame = None  # Global variable to store the latest frame
 
 # Database setup
 DATABASE_URL = "sqlite:///./notifications.db"
@@ -76,9 +75,7 @@ def init_db():
 @app.on_event("startup")
 async def startup_event():
     init_db()
-    asyncio.create_task(
-        send_frames_and_notifications()
-    )  # Run the function independently
+    asyncio.create_task(send_frames_and_notifications())
 
 
 @app.options("/ws")
@@ -92,15 +89,10 @@ async def websocket_endpoint(websocket: WebSocket):
     active_connections.append(websocket)
     try:
         while True:
-            # Send the latest frame to the connected client
-            if latest_frame:
-                await websocket.send_text(json.dumps(latest_frame))
-            await asyncio.sleep(1 / 30)  # Adjust frame rate if needed (e.g., 30 FPS)
+            # Wait for any message (we're not using it)
+            await websocket.receive_text()
     except:
-        pass  # Catch all exceptions to prevent crashing
-    finally:
-        if websocket in active_connections:  # Check before removing
-            active_connections.remove(websocket)
+        active_connections.remove(websocket)
 
 
 # Load video
@@ -110,7 +102,6 @@ frame_time = 1 / fps
 
 
 async def send_frames_and_notifications():
-    global latest_frame  # Use global variable to store the latest frame
     start_time = time.time()
     frame_count = 0
     last_frame_time = time.time()
@@ -134,12 +125,14 @@ async def send_frames_and_notifications():
         _, buffer = cv2.imencode(".jpg", frame)
         frame_data = base64.b64encode(buffer).decode("utf-8")
 
-        # Update the global variable with the latest frame
-        latest_frame = {
+        frame_message = {
             "type": "frame",
             "frame": frame_data,
             "frame_id": frame_count,
         }
+
+        for connection in active_connections:
+            await connection.send_text(json.dumps(frame_message))
 
         frame_count += 1
         last_frame_time = current_time
@@ -167,12 +160,8 @@ async def send_frames_and_notifications():
                     "lastMaintenance": "2023-05-15",
                 },
             }
-            # Send the notification to all active connections
             for connection in active_connections:
-                try:
-                    await connection.send_text(json.dumps(notification))
-                except:
-                    active_connections.remove(connection)
+                await connection.send_text(json.dumps(notification))
 
             # Save notification to database
             db = SessionLocal()
@@ -231,11 +220,4 @@ async def get_notification(camera_id: str, frame_id: int):
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(
-        "notification_api:app",
-        host="0.0.0.0",
-        port=8000,
-        ws_ping_interval=30,  # Ping interval to keep the connection alive
-        ws_ping_timeout=120,  # Timeout before closing an inactive connection
-        ws_max_size=16777216,  # Increase max message size if needed
-    )
+    uvicorn.run(app, host="0.0.0.0", port=8000)
