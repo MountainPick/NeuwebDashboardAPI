@@ -21,6 +21,8 @@ from sqlalchemy.orm import sessionmaker
 from datetime import datetime
 import os
 import logging
+from pydantic import BaseModel
+from typing import List
 
 app = FastAPI()
 
@@ -65,6 +67,23 @@ class Notification(Base):
     __table_args__ = (UniqueConstraint("camera_id", "frame_id", name="uix_1"),)
 
 
+class NotificationResponse(BaseModel):
+    id: int
+    title: str
+    description: str
+    avatar: str
+    camera_id: str
+    camera_name: str
+    camera_location: str
+    camera_model: str
+    camera_status: str
+    camera_status_color: str
+    camera_last_maintenance: str
+    frame_id: int
+    frame: str
+    timestamp: datetime
+
+
 def init_db():
     # Drop the database file if it exists
     if os.path.exists("./notifications.db"):
@@ -77,9 +96,7 @@ def init_db():
 @app.on_event("startup")
 async def startup_event():
     init_db()
-    asyncio.create_task(
-        send_frames_and_notifications()
-    )  # Run the function independently
+    asyncio.create_task(send_frames())  # Run the function independently
 
 
 @app.options("/ws")
@@ -88,9 +105,8 @@ async def options_ws(request):
 
 
 @app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
+async def websocket_stream_endpoint(websocket: WebSocket):
     await websocket.accept()
-    active_connections.append(websocket)
     try:
         while True:
             # Send the latest frame to the connected client
@@ -99,9 +115,75 @@ async def websocket_endpoint(websocket: WebSocket):
             await asyncio.sleep(1 / 30)  # Adjust frame rate if needed (e.g., 30 FPS)
     except:
         pass  # Catch all exceptions to prevent crashing
+
+
+@app.get("/notifications", response_model=List[NotificationResponse])
+async def list_notifications():
+    db = SessionLocal()
+    try:
+        notifications = db.query(Notification).all()
+        return [
+            NotificationResponse(
+                id=notification.id,
+                title=notification.title,
+                description=notification.description,
+                avatar=notification.avatar,
+                camera_id=notification.camera_id,
+                camera_name=notification.camera_name,
+                camera_location=notification.camera_location,
+                camera_model=notification.camera_model,
+                camera_status=notification.camera_status,
+                camera_status_color=notification.camera_status_color,
+                camera_last_maintenance=notification.camera_last_maintenance,
+                frame_id=notification.frame_id,
+                frame=base64.b64encode(notification.frame_data).decode("utf-8"),
+                timestamp=notification.timestamp,
+            )
+            for notification in notifications
+        ]
+    except Exception as e:
+        logging.error(f"Error retrieving notifications: {e}")
+        raise HTTPException(status_code=500, detail="Internal Server Error")
     finally:
-        if websocket in active_connections:  # Check before removing
-            active_connections.remove(websocket)
+        db.close()
+
+
+@app.get("/notifications/{camera_id}/{frame_id}", response_model=NotificationResponse)
+async def get_notification(camera_id: str, frame_id: int):
+    db = SessionLocal()
+    try:
+        notification = (
+            db.query(Notification)
+            .filter(
+                Notification.camera_id == camera_id, Notification.frame_id == frame_id
+            )
+            .first()
+        )
+
+        if notification is None:
+            raise HTTPException(status_code=404, detail="Notification not found")
+
+        return NotificationResponse(
+            id=notification.id,
+            title=notification.title,
+            description=notification.description,
+            avatar=notification.avatar,
+            camera_id=notification.camera_id,
+            camera_name=notification.camera_name,
+            camera_location=notification.camera_location,
+            camera_model=notification.camera_model,
+            camera_status=notification.camera_status,
+            camera_status_color=notification.camera_status_color,
+            camera_last_maintenance=notification.camera_last_maintenance,
+            frame_id=notification.frame_id,
+            frame=base64.b64encode(notification.frame_data).decode("utf-8"),
+            timestamp=notification.timestamp,
+        )
+    except Exception as e:
+        logging.error(f"Error retrieving notification: {e}")
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+    finally:
+        db.close()
 
 
 # Load video
@@ -110,7 +192,7 @@ fps = video.get(cv2.CAP_PROP_FPS)
 frame_time = 1 / fps
 
 
-async def send_frames_and_notifications():
+async def send_frames():
     global latest_frame  # Use global variable to store the latest frame
     start_time = time.time()
     frame_count = 0
@@ -145,16 +227,13 @@ async def send_frames_and_notifications():
         frame_count += 1
         last_frame_time = current_time
 
-        # Send notification after 10 seconds
-        if (
-            current_time - start_time > 10
-            and (current_time - start_time) % 10 < frame_time
-        ):
+        # Save notification to database after 15 seconds
+        if current_time - start_time > 15:
             notification = {
                 "type": "notification",
                 "id": random.randint(1, 1000),
                 "title": f"New Notification {random.randint(1, 100)}",
-                "description": "This is a notification sent every 10 seconds.",
+                "description": "This is a notification sent every 15 seconds.",
                 "avatar": f"https://i.pravatar.cc/150?img={random.randint(1, 70)}",
                 "frame": frame_data,
                 "frame_id": frame_count,
@@ -169,14 +248,7 @@ async def send_frames_and_notifications():
                 },
             }
             # Print the notification to the output
-            logging.info(f"Sending notification: {notification}")
-
-            # Send the notification to all active connections
-            for connection in active_connections:
-                try:
-                    await connection.send_text(json.dumps(notification))
-                except:
-                    active_connections.remove(connection)
+            logging.info(f"Saving notification: {notification}")
 
             # Save notification to database
             db = SessionLocal()
@@ -197,39 +269,9 @@ async def send_frames_and_notifications():
             db.add(db_notification)
             db.commit()
             db.close()
+            start_time = current_time  # Reset start time after saving
 
         await asyncio.sleep(frame_time)
-
-
-@app.get("/notifications/{camera_id}/{frame_id}")
-async def get_notification(camera_id: str, frame_id: int):
-    db = SessionLocal()
-    notification = (
-        db.query(Notification)
-        .filter(Notification.camera_id == camera_id, Notification.frame_id == frame_id)
-        .first()
-    )
-    db.close()
-
-    if notification is None:
-        raise HTTPException(status_code=404, detail="Notification not found")
-
-    return {
-        "id": notification.id,
-        "title": notification.title,
-        "description": notification.description,
-        "avatar": notification.avatar,
-        "camera_id": notification.camera_id,
-        "camera_name": notification.camera_name,
-        "camera_location": notification.camera_location,
-        "camera_model": notification.camera_model,
-        "camera_status": notification.camera_status,
-        "camera_status_color": notification.camera_status_color,
-        "camera_last_maintenance": notification.camera_last_maintenance,
-        "frame_id": notification.frame_id,
-        "frame": base64.b64encode(notification.frame_data).decode("utf-8"),
-        "timestamp": notification.timestamp,
-    }
 
 
 if __name__ == "__main__":

@@ -109,57 +109,57 @@ def stream_video_sync(token, camera_id, video_path):
             num_human_tracks = frame_results.get("num_human_tracks", 0)
             human_tracked_boxes = frame_results.get("human_tracked_boxes", [])
             # Add bounding boxes and labels for tracked humans
-            if human_tracked_boxes is not None:
-                for human in human_tracked_boxes:
-                    track_box = human.get("track_box")
-                    track_id = human.get("track_id", "N/A")
-                    if track_box:
-                        x1, y1, x2, y2 = map(int, track_box)
-                        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
-                        label = f"ID: {track_id}"
-                        (label_width, label_height), _ = cv2.getTextSize(
-                            label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1
-                        )
-                        cv2.rectangle(
-                            frame,
-                            (x1, y1 - label_height - 5),
-                            (x1 + label_width, y1),
-                            (0, 0, 255),
-                            -1,
-                        )
-                        cv2.putText(
-                            frame,
-                            label,
-                            (x1, y1 - 5),
-                            cv2.FONT_HERSHEY_SIMPLEX,
-                            0.5,
-                            (255, 255, 255),
-                            1,
-                        )
-            # Add total people count
-            cv2.putText(
-                frame,
-                f"People: {num_human_tracks}",
-                (10, 30),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                1,
-                (0, 255, 0),
-                2,
-            )
-            # Display the processed image
-            cv2.imshow("Processed Image", frame)
-            if cv2.waitKey(1) & 0xFF == ord("q"):
-                break
-            # Sleep for 0.2 seconds to slow down the frame rate
-            time.sleep(0.1)
-            # Calculate the time difference in milliseconds
-            duration_ms = (end_time - start_time) * 1000
-            print(f"Time taken for frame {frame_number}: {duration_ms:.2f} ms")
-            frame_number += 1
-            last_frame_time = current_time
-        cap.release()
-        ws.close()
-        cv2.destroyAllWindows()
+        #     if human_tracked_boxes is not None:
+        #         for human in human_tracked_boxes:
+        #             track_box = human.get("track_box")
+        #             track_id = human.get("track_id", "N/A")
+        #             if track_box:
+        #                 x1, y1, x2, y2 = map(int, track_box)
+        #                 cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
+        #                 label = f"ID: {track_id}"
+        #                 (label_width, label_height), _ = cv2.getTextSize(
+        #                     label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1
+        #                 )
+        #                 cv2.rectangle(
+        #                     frame,
+        #                     (x1, y1 - label_height - 5),
+        #                     (x1 + label_width, y1),
+        #                     (0, 0, 255),
+        #                     -1,
+        #                 )
+        #                 cv2.putText(
+        #                     frame,
+        #                     label,
+        #                     (x1, y1 - 5),
+        #                     cv2.FONT_HERSHEY_SIMPLEX,
+        #                     0.5,
+        #                     (255, 255, 255),
+        #                     1,
+        #                 )
+        #     # Add total people count
+        #     cv2.putText(
+        #         frame,
+        #         f"People: {num_human_tracks}",
+        #         (10, 30),
+        #         cv2.FONT_HERSHEY_SIMPLEX,
+        #         1,
+        #         (0, 255, 0),
+        #         2,
+        #     )
+        #     # Display the processed image
+        #     cv2.imshow("Processed Image", frame)
+        #     if cv2.waitKey(1) & 0xFF == ord("q"):
+        #         break
+        #     # Sleep for 0.2 seconds to slow down the frame rate
+        #     time.sleep(0.1)
+        #     # Calculate the time difference in milliseconds
+        #     duration_ms = (end_time - start_time) * 1000
+        #     print(f"Time taken for frame {frame_number}: {duration_ms:.2f} ms")
+        #     frame_number += 1
+        #     last_frame_time = current_time
+        # cap.release()
+        # ws.close()
+        # cv2.destroyAllWindows()
     except Exception as e:
         print(f"Error connecting to WebSocket: {e}")
 
