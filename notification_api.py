@@ -20,6 +20,7 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from datetime import datetime
 import os
+import logging
 
 app = FastAPI()
 
@@ -168,7 +169,7 @@ async def send_frames_and_notifications():
                 },
             }
             # Print the notification to the output
-            print(f"Sending notification: {notification}")
+            logging.info(f"Sending notification: {notification}")
 
             # Send the notification to all active connections
             for connection in active_connections:
