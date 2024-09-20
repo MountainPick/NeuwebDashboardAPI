@@ -11,8 +11,8 @@ import time
 
 # Apply the nest_asyncio patch
 nest_asyncio.apply()
-API_BASE_URL = "http://13.210.144.190:8000"
-WEBSOCKET_BASE_URL = "ws://13.210.144.190:8000/ws/process-stream-image"
+API_BASE_URL = "http://54.252.224.240:8000"
+WEBSOCKET_BASE_URL = "ws://54.252.224.240:8000/ws/process-stream-image"
 
 
 # 1. Sign Up
@@ -150,6 +150,8 @@ def stream_video_sync(token, camera_id, video_path):
             cv2.imshow("Processed Image", frame)
             if cv2.waitKey(1) & 0xFF == ord("q"):
                 break
+            # Sleep for 0.2 seconds to slow down the frame rate
+            time.sleep(0.1)
             # Calculate the time difference in milliseconds
             duration_ms = (end_time - start_time) * 1000
             print(f"Time taken for frame {frame_number}: {duration_ms:.2f} ms")

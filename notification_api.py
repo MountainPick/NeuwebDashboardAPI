@@ -167,6 +167,9 @@ async def send_frames_and_notifications():
                     "lastMaintenance": "2023-05-15",
                 },
             }
+            # Print the notification to the output
+            print(f"Sending notification: {notification}")
+
             # Send the notification to all active connections
             for connection in active_connections:
                 try:
