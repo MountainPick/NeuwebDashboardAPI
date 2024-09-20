@@ -1,4 +1,4 @@
-from fastapi import FastAPI, WebSocket, HTTPException
+from fastapi import FastAPI, WebSocket, HTTPException, Depends, Body, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import asyncio
@@ -21,7 +21,7 @@ from sqlalchemy.orm import sessionmaker
 from datetime import datetime
 import os
 import logging
-from pydantic import BaseModel
+from pydantic import BaseModel, EmailStr  # Import EmailStr for email validation
 from typing import List
 
 app = FastAPI()
@@ -44,6 +44,15 @@ DATABASE_URL = "sqlite:///./notifications.db"
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, index=True)
+    email = Column(String, unique=True, index=True)
+    username = Column(String, unique=True, index=True)
+    password = Column(String)  # In a real application, use hashed passwords
 
 
 class Notification(Base):
@@ -84,6 +93,23 @@ class NotificationResponse(BaseModel):
     timestamp: datetime
 
 
+class UserRequest(BaseModel):
+    email: EmailStr  # Use EmailStr for email validation
+    username: str
+    password: str
+
+
+class UserResponse(BaseModel):
+    id: int
+    email: EmailStr  # Use EmailStr for email validation
+    username: str
+
+
+class UserLoginRequest(BaseModel):
+    username: str
+    password: str
+
+
 def init_db():
     # Drop the database file if it exists
     if os.path.exists("./notifications.db"):
@@ -115,6 +141,39 @@ async def websocket_stream_endpoint(websocket: WebSocket):
             await asyncio.sleep(1 / 30)  # Adjust frame rate if needed (e.g., 30 FPS)
     except:
         pass  # Catch all exceptions to prevent crashing
+
+
+@app.post("/signup", response_model=UserResponse)
+async def signup(user: UserRequest = Body(...)):
+    # Create a new database session
+    db = SessionLocal()
+    try:
+        # Check if the user already exists
+        existing_user = db.query(User).filter(User.email == user.email).first()
+        if existing_user:
+            raise HTTPException(status_code=400, detail="Email already registered")
+
+        db_user = User(email=user.email, username=user.username, password=user.password)
+        db.add(db_user)
+        db.commit()
+        db.refresh(db_user)
+        return UserResponse(
+            id=db_user.id, email=db_user.email, username=db_user.username
+        )
+    finally:
+        db.close()
+
+
+@app.post("/login")
+async def login(user: UserLoginRequest = Body(...)):
+    db = SessionLocal()
+    try:
+        user_record = db.query(User).filter(User.username == user.username).first()
+        if user_record is None or user_record.password != user.password:
+            raise HTTPException(status_code=400, detail="Invalid credentials")
+        return {"message": "Login successful", "user_id": user_record.id}
+    finally:
+        db.close()
 
 
 @app.get("/notifications", response_model=List[NotificationResponse])
