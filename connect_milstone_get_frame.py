@@ -3,7 +3,6 @@ import base64
 import cv2
 import numpy as np
 import json
-import requests
 import websocket
 from fastapi import FastAPI, WebSocket
 from fastapi.responses import HTMLResponse
@@ -21,11 +20,6 @@ app = FastAPI()
 # WebSocket URL for receiving live stream
 ws_url = "ws://52.86.92.233:8004/ws/live-stream"
 
-# Model WebSocket URL for sending frames
-neuweb_IP = "3.27.160.0"
-port = 8000
-camera_id = 1
-
 # Variables to track frames and time
 frame_count = 0
 start_time = 0
@@ -34,33 +28,11 @@ SEND_INTERVAL = 0.1  # Adjust this value to control sending rate
 
 # Global variables for WebSocket connections
 ws_stream = None
-ws_model = None
 processed_frame = None
 
 
-# Login to obtain the authentication token
-def login_to_get_token(username, password, url):
-    """Log in to the server and get the authentication token"""
-    logger.info(f"Attempting to login and get token from {url}")
-    response = requests.post(
-        f"{url}/token", data={"username": username, "password": password}
-    )
-    response_data = response.json()
-    logger.info("Successfully obtained token")
-    return response_data["access_token"]
-
-
-# Token retrieval (replace with your actual username, password, and server URL)
-username = "test"  # Replace with your actual username
-password = "test"  # Replace with your actual password
-token = login_to_get_token(username, password, f"http://{neuweb_IP}:{port}")
-
-# Model WebSocket URL
-neuweb_ws_url = f"ws://{neuweb_IP}:{port}/ws/process-stream-image?token={token}"
-
-
 async def process_frame(frame):
-    global ws_model, last_sent_time, processed_frame
+    global last_sent_time, processed_frame
     current_time = time.time()
 
     if current_time - last_sent_time < SEND_INTERVAL:
@@ -75,23 +47,23 @@ async def process_frame(frame):
         img_base64 = base64.b64encode(img_bytes).decode("utf-8")
         message = json.dumps(
             {
-                "camera_id": camera_id,
+                "camera_id": 1,  # Assuming camera_id is still needed
                 "image": img_base64,
-                "token": token,
                 "return_processed_image": False,
-                "subscriptionplan_id": 22,
+                "subcriptionplan_id": 22,
             }
         )
 
-        ws_model.send(message)
-        logger.debug("Sent frame to model WebSocket")
-        response = ws_model.recv()
-        logger.debug("Received response from model WebSocket")
+        # Use ws_url for sending the message
+        ws = websocket.create_connection(ws_url)
+        ws.send(message)
+        logger.debug("Sent frame to WebSocket")
+        response = ws.recv()
+        logger.debug("Received response from WebSocket")
         response_data = json.loads(response)
         frame_results = response_data.get("frame_results", {})
         num_human_tracks = frame_results.get("num_human_tracks", 0)
         human_tracked_boxes = frame_results.get("human_tracked_boxes", [])
-        # notification_data = frame_results.get("notification", [])
 
         if human_tracked_boxes is not None:
             for human in human_tracked_boxes:
@@ -136,29 +108,11 @@ async def process_frame(frame):
         logger.debug(f"Processed frame with {num_human_tracks} people detected")
 
     except Exception as e:
-        logger.error(f"Error processing model response: {e}")
-        await reconnect_model_ws()
-
-
-async def reconnect_model_ws():
-    global ws_model
-    try:
-        if ws_model:
-            ws_model.close()
-    except:
-        pass
-    await asyncio.sleep(5)
-    logger.info("Reconnecting to model WebSocket...")
-    try:
-        ws_model = websocket.create_connection(neuweb_ws_url)
-        logger.info("Reconnected to model WebSocket")
-    except Exception as e:
-        logger.error(f"Failed to reconnect to model WebSocket: {e}")
-        ws_model = None
+        logger.error(f"Error processing response: {e}")
 
 
 async def stream_processor():
-    global ws_stream, ws_model, frame_count, start_time
+    global ws_stream, frame_count, start_time
     logger.info("Starting stream processor")
 
     while True:
@@ -167,10 +121,6 @@ async def stream_processor():
                 ws_stream = websocket.WebSocket()
                 ws_stream.connect(ws_url)
                 logger.info("Connected to stream WebSocket")
-
-            if ws_model is None or not ws_model.connected:
-                ws_model = websocket.create_connection(neuweb_ws_url)
-                logger.info("Connected to model WebSocket")
 
             message = ws_stream.recv()
             if not message:
@@ -182,7 +132,11 @@ async def stream_processor():
             frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
 
             if frame is not None:
-                await process_frame(frame)
+                # Save the frame to a file
+                frame_filename = f"frame_{frame_count}.jpg"
+                cv2.imwrite(frame_filename, frame)
+                logger.info(f"Saved frame {frame_count} to {frame_filename}")
+
                 frame_count += 1
                 print(frame_count)
             else:
