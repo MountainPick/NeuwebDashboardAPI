@@ -594,7 +594,7 @@ if __name__ == "__main__":
 
     uvicorn.run(
         app,
-        host="localhost",
+        host="0.0.0.0",
         port=8000,
         ws_ping_interval=30,  # Ping interval to keep the connection alive
         ws_ping_timeout=120,  # Timeout before closing an inactive connection
