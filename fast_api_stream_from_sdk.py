@@ -20,6 +20,7 @@ from concurrent.futures import ThreadPoolExecutor
 from collections import deque
 import websockets
 from pydantic import BaseModel
+import threading
 
 app = FastAPI()
 
@@ -383,7 +384,7 @@ processing_lock = asyncio.Lock()
 
 
 # Add these new global variables
-neuweb_IP2 = "3.25.215.111"
+neuweb_IP2 = "3.238.134.253"
 camera_id_2 = "7b3d39e9-67c7-418f-8f1c-31ff16cdf50f"
 
 # Global variables for WebSocket connections
@@ -424,17 +425,25 @@ async def ensure_websocket_connection(ws_url):
                 raise
 
 
-async def process_frame_through_neuweb(frame, camera_id, camera_id_int):
+# Add these global variables
+FRAME_SKIP = 2  # Process every 3rd frame
+frame_counter = {user_camera_ids["camera_id_1"]: 0, user_camera_ids["camera_id_2"]: 0}
+thread_pool = ThreadPoolExecutor(max_workers=4)
+processing_semaphore = threading.Semaphore(2)  # Limit concurrent processing to 2
+
+
+# Update the process_frame_through_neuweb function
+def process_frame_through_neuweb(frame, camera_id, camera_id_int):
     global ws_connection_1, ws_connection_2
 
     try:
         if camera_id == user_camera_ids["camera_id_1"]:
             if ws_connection_1 is None or ws_connection_1.closed:
-                ws_connection_1 = await ensure_websocket_connection(neuweb_ws_url_1)
+                ws_connection_1 = websockets.connect(neuweb_ws_url_1)
             ws_connection = ws_connection_1
         elif camera_id == user_camera_ids["camera_id_2"]:
             if ws_connection_2 is None or ws_connection_2.closed:
-                ws_connection_2 = await ensure_websocket_connection(neuweb_ws_url_2)
+                ws_connection_2 = websockets.connect(neuweb_ws_url_2)
             ws_connection = ws_connection_2
         else:
             raise ValueError(f"Invalid camera_id: {camera_id}")
@@ -443,6 +452,9 @@ async def process_frame_through_neuweb(frame, camera_id, camera_id_int):
             img_bytes = base64.b64decode(frame)
             nparr = np.frombuffer(img_bytes, np.uint8)
             frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+
+        # Resize the frame to reduce processing time
+        frame = cv2.resize(frame, (640, 480))
 
         encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 50]
         _, img_encoded = cv2.imencode(".jpg", frame, encode_param)
@@ -459,8 +471,8 @@ async def process_frame_through_neuweb(frame, camera_id, camera_id_int):
             }
         )
 
-        await ws_connection.send(message)
-        response = await ws_connection.recv()
+        ws_connection.send(message)
+        response = ws_connection.recv()
 
         if not response:
             logger.warning(
@@ -473,7 +485,6 @@ async def process_frame_through_neuweb(frame, camera_id, camera_id_int):
         num_human_tracks = frame_results.get("num_human_tracks", 0)
         human_tracked_boxes = frame_results.get("human_tracked_boxes", [])
         notification_data = frame_results.get("notification", [])
-        print(f"Notification data for camera {camera_id}:", notification_data)
 
         if human_tracked_boxes is not None:
             for human in human_tracked_boxes:
@@ -483,16 +494,6 @@ async def process_frame_through_neuweb(frame, camera_id, camera_id_int):
                     x1, y1, x2, y2 = map(int, track_box)
                     cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
                     label = f"ID: {track_id}"
-                    (label_width, label_height), _ = cv2.getTextSize(
-                        label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1
-                    )
-                    cv2.rectangle(
-                        frame,
-                        (x1, y1 - label_height - 5),
-                        (x1 + label_width, y1),
-                        (0, 0, 255),
-                        -1,
-                    )
                     cv2.putText(
                         frame,
                         label,
@@ -542,14 +543,14 @@ async def continuous_frame_processing():
                 processing_queue.get(), timeout=0.1
             )
             if camera_id == user_camera_ids["camera_id_1"]:
-                processed_frame = await process_frame_through_neuweb(
-                    frame, camera_id, 1
+                processed_frame = await asyncio.get_event_loop().run_in_executor(
+                    thread_pool, process_frame_through_neuweb, frame, camera_id, 1
                 )
                 async with processing_lock:
                     latest_processed_frame_1 = processed_frame
             elif camera_id == user_camera_ids["camera_id_2"]:
-                processed_frame = await process_frame_through_neuweb(
-                    frame, camera_id, 2
+                processed_frame = await asyncio.get_event_loop().run_in_executor(
+                    thread_pool, process_frame_through_neuweb, frame, camera_id, 2
                 )
                 async with processing_lock:
                     latest_processed_frame_2 = processed_frame
@@ -567,26 +568,23 @@ async def broadcast_to_frontend(camera_id: str, frame: str):
         latest_frame_1, \
         latest_frame_2, \
         latest_processed_frame_1, \
-        latest_processed_frame_2
+        latest_processed_frame_2, \
+        frame_counter
+
+    frame_counter[camera_id] = (frame_counter[camera_id] + 1) % (FRAME_SKIP + 1)
+    if frame_counter[camera_id] != 0:
+        return  # Skip this frame
 
     if camera_id == user_camera_ids["camera_id_1"]:
         latest_frame_1 = frame
-        if processing_queue.full():
-            try:
-                processing_queue.get_nowait()
-            except asyncio.QueueEmpty:
-                pass
-        await processing_queue.put((frame, camera_id))
+        if not processing_queue.full():
+            await processing_queue.put((frame, camera_id))
         async with processing_lock:
             frame_to_send = latest_processed_frame_1 or frame
     elif camera_id == user_camera_ids["camera_id_2"]:
         latest_frame_2 = frame
-        if processing_queue.full():
-            try:
-                processing_queue.get_nowait()
-            except asyncio.QueueEmpty:
-                pass
-        await processing_queue.put((frame, camera_id))
+        if not processing_queue.full():
+            await processing_queue.put((frame, camera_id))
         async with processing_lock:
             frame_to_send = latest_processed_frame_2 or frame
     else:

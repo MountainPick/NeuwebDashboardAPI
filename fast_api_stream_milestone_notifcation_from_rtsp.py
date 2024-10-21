@@ -26,6 +26,7 @@ from typing import List
 import websocket
 import numpy as np
 import requests
+import threading
 
 app = FastAPI()
 logger = logging.getLogger(__name__)
@@ -39,8 +40,6 @@ app.add_middleware(
     allow_headers=["*"],  # Allows all headers
 )
 
-ws_url = "ws://52.86.92.233:8004/ws/live-stream"
-
 # Model WebSocket URL for sending frames
 neuweb_IP = "52.63.219.76"
 port = 8000
@@ -53,7 +52,6 @@ last_sent_time = 0
 SEND_INTERVAL = 0  # Adjust this value to control sending rate
 
 # Global variables for WebSocket connections
-ws_stream = None
 ws_model = None
 processed_frame = None
 
@@ -62,6 +60,13 @@ FRAME_SKIP = 2  # Process every 3rd frame
 frame_counter = 0
 last_processed_time = time.time()
 PROCESS_INTERVAL = 0.1  # Minimum time between processing frames
+
+# RTSP stream URL
+rtsp_url = "rtsp://tho:Ldtho1610@100.82.206.126/axis-media/media.amp"
+
+# Global variables
+latest_frame = None
+frame_lock = threading.Lock()
 
 
 # Login to obtain the authentication token
@@ -192,50 +197,191 @@ async def reconnect_model_ws():
 
 
 async def stream_processor():
-    global ws_stream, ws_model, frame_count, start_time
+    global latest_frame, ws_model, processed_frame
     logger.info("Starting stream processor")
 
-    while True:
-        try:
-            if ws_stream is None or not ws_stream.connected:
-                ws_stream = websocket.WebSocket()
-                ws_stream.connect(ws_url)
-                logger.info("Connected to stream WebSocket")
+    websocket_url = f"ws://{neuweb_IP}:{port}/ws/process-stream-image?token={token}"
 
-            if ws_model is None or not ws_model.connected:
-                ws_model = websocket.create_connection(neuweb_ws_url)
-                logger.info("Connected to model WebSocket")
+    try:
+        ws_model = websocket.WebSocket()
+        ws_model.connect(websocket_url)
+        cap = cv2.VideoCapture(rtsp_url)
+        if not cap.isOpened():
+            logger.error("Error: Unable to open RTSP stream.")
+            return
 
-            message = ws_stream.recv()
-            if not message:
-                logger.warning("Received empty message from stream WebSocket")
-                continue
+        # Function to capture frames continuously
+        def capture_frames():
+            nonlocal cap
+            global latest_frame
+            while cap.isOpened():
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                # Resize to HD
+                frame = cv2.resize(frame, (1280, 720))
+                with frame_lock:
+                    latest_frame = frame
 
-            img_data = base64.b64decode(message)
-            np_arr = np.frombuffer(img_data, np.uint8)
-            frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+        # Start the frame capture thread
+        frame_thread = threading.Thread(target=capture_frames)
+        frame_thread.daemon = True
+        frame_thread.start()
 
-            if frame is not None:
-                await process_frame(frame)
-                frame_count += 1
-                print(frame_count)
-            else:
-                logger.warning("Error: Decoded frame is None")
+        frame_number = 0
+        latest_noti = None
 
-        except websocket.WebSocketException as e:
-            logger.error(f"WebSocket error in stream processor: {e}")
-            await asyncio.sleep(5)
-            ws_stream = None
-        except ConnectionResetError as e:
-            logger.error(f"Connection reset error: {e}")
-            await asyncio.sleep(5)
-            ws_stream = None
-        except Exception as e:
-            logger.error(f"Unexpected error in stream processor: {e}", exc_info=True)
-            await asyncio.sleep(5)
-            ws_stream = None
+        # Wait until we have at least one frame
+        while True:
+            with frame_lock:
+                if latest_frame is not None:
+                    break
+            await asyncio.sleep(0.01)
 
-        await asyncio.sleep(0.01)  # Small delay to prevent blocking
+        while True:
+            with frame_lock:
+                frame = latest_frame.copy()
+
+            _, img_encoded = cv2.imencode(".jpg", frame)
+            img_bytes = img_encoded.tobytes()
+            img_base64 = base64.b64encode(img_bytes).decode("utf-8")
+            message = json.dumps(
+                {
+                    "token": token,
+                    "camera_id": camera_id,
+                    "image": img_base64,
+                    "return_processed_image": False,
+                    "subscriptionplan_id": 15,
+                    "threat_recognition_threshold": 0.05,
+                }
+            )
+            # Capture the start time
+            start_time = time.time()
+            ws_model.send(message)
+            response = ws_model.recv()
+            # Capture the end time
+            end_time = time.time()
+            response_json = json.loads(response)
+            logger.debug(response_json)
+            logger.debug(f"Time taken: {end_time - start_time}")
+
+            # Parse the response and add text overlay
+            frame_results = response_json.get("frame_results", {})
+            if len(frame_results.get("notification", [])) > 0:
+                latest_noti = frame_results["notification"][0]["content"]
+                noti_time = time.time()
+                # Convert to datetime YY-MM-DD HH:MM:SS
+                noti_time = datetime.datetime.fromtimestamp(noti_time).strftime(
+                    "%H:%M:%S %d-%m-%Y"
+                )
+            if latest_noti is not None:
+                # add text overlay
+                cv2.putText(
+                    frame,
+                    f"Notification: {latest_noti}",
+                    (10, 70),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    1,
+                    (0, 0, 255),
+                    2,
+                )
+                # add time overlay
+                cv2.putText(
+                    frame,
+                    f"{noti_time}",
+                    (10, 110),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    1,
+                    (0, 0, 255),
+                    2,
+                )
+            num_human_tracks = frame_results.get("num_human_tracks", 0)
+            human_tracked_boxes = frame_results.get("human_tracked_boxes", [])
+            object_tracked_boxes = frame_results.get("object_tracked_boxes", [])
+            if object_tracked_boxes is not None:
+                for obj in object_tracked_boxes:
+                    track_box = obj.get("track_box")
+                    track_id = obj.get("track_name", "N/A")
+                    if track_box:
+                        x1, y1, x2, y2 = map(int, track_box)
+                        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                        label = f"{track_id}"
+                        (label_width, label_height), _ = cv2.getTextSize(
+                            label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1
+                        )
+                        cv2.rectangle(
+                            frame,
+                            (x1, y1 - label_height - 5),
+                            (x1 + label_width, y1),
+                            (0, 255, 0),
+                            -1,
+                        )
+                        cv2.putText(
+                            frame,
+                            label,
+                            (x1, y1 - 5),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.5,
+                            (255, 255, 255),
+                            1,
+                        )
+            # Add bounding boxes and labels for tracked humans
+            if human_tracked_boxes is not None:
+                for human in human_tracked_boxes:
+                    track_box = human.get("track_box")
+                    track_id = human.get("track_name", "N/A")
+                    if track_box:
+                        x1, y1, x2, y2 = map(int, track_box)
+                        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
+                        label = f"{track_id}"
+                        (label_width, label_height), _ = cv2.getTextSize(
+                            label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1
+                        )
+                        cv2.rectangle(
+                            frame,
+                            (x1, y1 - label_height - 5),
+                            (x1 + label_width, y1),
+                            (0, 0, 255),
+                            -1,
+                        )
+                        cv2.putText(
+                            frame,
+                            label,
+                            (x1, y1 - 5),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.5,
+                            (255, 255, 255),
+                            1,
+                        )
+            # Add total people count
+            cv2.putText(
+                frame,
+                f"People: {num_human_tracks}",
+                (10, 30),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                1,
+                (0, 255, 0),
+                2,
+            )
+            print("frame number", frame_number)
+
+            _, buffer = cv2.imencode(".jpg", frame)
+            processed_frame = base64.b64encode(buffer).decode("utf-8")
+
+            # Calculate the time difference in milliseconds
+            duration_ms = (end_time - start_time) * 1000
+            logger.debug(f"Time taken for frame {frame_number}: {duration_ms:.2f} ms")
+            frame_number += 1
+
+            await asyncio.sleep(0.01)  # Small delay to prevent blocking
+
+    except Exception as e:
+        logger.error(f"Error in stream processor: {e}", exc_info=True)
+    finally:
+        if cap.isOpened():
+            cap.release()
+        if ws_model:
+            ws_model.close()
 
 
 # Store active connections
@@ -334,7 +480,6 @@ def init_db():
 @app.on_event("startup")
 async def startup_event():
     init_db()
-    # asyncio.create_task(send_frames())  # Run the function independently
     asyncio.create_task(stream_processor())
 
 
