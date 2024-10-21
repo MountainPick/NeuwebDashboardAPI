@@ -19,6 +19,8 @@ from sqlalchemy import (
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from datetime import datetime
+import datetime
+
 import os
 import logging
 from pydantic import BaseModel, EmailStr  # Import EmailStr for email validation
@@ -271,7 +273,7 @@ async def stream_processor():
                 latest_noti = frame_results["notification"][0]["content"]
                 noti_time = time.time()
                 # Convert to datetime YY-MM-DD HH:MM:SS
-                noti_time = datetime.datetime.fromtimestamp(noti_time).strftime(
+                noti_time = datetime.fromtimestamp(noti_time).strftime(
                     "%H:%M:%S %d-%m-%Y"
                 )
             if latest_noti is not None:
