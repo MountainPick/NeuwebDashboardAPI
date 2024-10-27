@@ -765,6 +765,6 @@ if __name__ == "__main__":
         "app",
         host="0.0.0.0",
         port=8000,
-        ssl_keyfile="/etc/letsencrypt/live/fapi.neuwebtech.com/privkey.pem",
-        ssl_certfile="/etc/letsencrypt/live/fapi.neuwebtech.com/fullchain.pem",
+        ssl_keyfile="/home/ubuntu/certs/privkey.pem",  # Updated path
+        ssl_certfile="/home/ubuntu/certs/fullchain.pem",  # Updated path
     )
