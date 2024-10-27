@@ -11,12 +11,22 @@ import threading
 
 # Apply the nest_asyncio patch
 nest_asyncio.apply()
-ws_IP = "52.63.219.76"
-# ws_IP = "172.22.22.7"
-# ws_IP = "0.0.0.0"
-# ws_IP = "3.24.124.52"
-API_BASE_URL = f"http://{ws_IP}:8000"
-WEBSOCKET_BASE_URL = f"ws://{ws_IP}:8000/ws/process-stream-image"
+# ws_IP = "54.252.71.145"
+# # ws_IP = "172.22.22.7"
+# # ws_IP = "0.0.0.0"
+# # ws_IP = "3.24.124.52"
+
+# API_BASE_URL = f"http://{ws_IP}:8000"
+# WEBSOCKET_BASE_URL = f"ws://{ws_IP}:8000/ws/process-stream-image"
+
+# ws_IP = "web-alb-1726954032.ap-southeast-2.elb.amazonaws.com"
+# API_BASE_URL = f"http://{ws_IP}"
+# WEBSOCKET_BASE_URL = f"ws://{ws_IP}/ws/process-stream-image"
+
+
+ws_IP = "api.neuwebtech.com"
+API_BASE_URL = f"https://{ws_IP}"
+WEBSOCKET_BASE_URL = f"wss://{ws_IP}/ws/process-stream-image"
 
 
 # 1. Sign Up
@@ -260,8 +270,8 @@ if __name__ == "__main__":
     if "access_token" in login_response:
         TOKEN = login_response["access_token"]
         CAMERA_ID = 1  # Replace with your camera ID
-        # VIDEO_PATH = "/mnt/SSD2TB/code/neuweb/data/demo/gasstationfight.mp4"  # Replace with the path to your video file
-        VIDEO_PATH = "rtsp://tho:Ldtho1610@100.82.206.126/axis-media/media.amp"
+        VIDEO_PATH = "fire.mp4"  # Replace with the path to your video file
+        # VIDEO_PATH = "rtsp://tho:Ldtho1610@100.82.206.126/axis-media/media.amp"
         # VIDEO_PATH = 0  # Uncomment if you want to use the default camera
         # Stream video
         print("Streaming video...")

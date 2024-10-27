@@ -42,7 +42,9 @@ app.add_middleware(
 )
 
 # Model WebSocket URL for sending frames
-neuweb_IP = "52.63.219.76"
+# neuweb_IP = "52.63.219.76"
+neuweb_IP = "api.neuwebtech.com"
+
 port = 8000
 camera_id = 1
 
@@ -63,7 +65,8 @@ last_processed_time = time.time()
 PROCESS_INTERVAL = 0.1  # Minimum time between processing frames
 
 # RTSP stream URL
-rtsp_url = "rtsp://tho:Ldtho1610@100.82.206.126/axis-media/media.amp"
+# rtsp_url = "rtsp://tho:Ldtho1610@100.82.206.126/axis-media/media.amp"
+rtsp_url = "rtsp://root:Admin1234@100.91.128.124/axis-media/media.amp"
 
 # Global variables
 latest_frame = None
@@ -85,10 +88,12 @@ def login_to_get_token(username, password, url):
 # Token retrieval (replace with your actual username, password, and server URL)
 username = "test"  # Replace with your actual username
 password = "test"  # Replace with your actual password
-token = login_to_get_token(username, password, f"http://{neuweb_IP}:{port}")
+# token = login_to_get_token(username, password, f"http://{neuweb_IP}:{port}")
+token = login_to_get_token(username, password, f"https://{neuweb_IP}")
 
 # Model WebSocket URL
-neuweb_ws_url = f"ws://{neuweb_IP}:{port}/ws/process-stream-image?token={token}"
+# neuweb_ws_url = f"ws://{neuweb_IP}:{port}/ws/process-stream-image?token={token}"
+neuweb_ws_url = f"wss://{neuweb_IP}/ws/process-stream-image?token={token}"
 
 
 async def process_frame(frame):
@@ -201,7 +206,8 @@ async def stream_processor():
     global latest_frame, ws_model, processed_frame
     logger.info("Starting stream processor")
 
-    websocket_url = f"ws://{neuweb_IP}:{port}/ws/process-stream-image?token={token}"
+    # websocket_url = f"ws://{neuweb_IP}:{port}/ws/process-stream-image?token={token}"
+    websocket_url = f"wss://{neuweb_IP}/ws/process-stream-image?token={token}"
 
     try:
         ws_model = websocket.WebSocket()
