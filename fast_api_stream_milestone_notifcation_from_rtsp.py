@@ -762,7 +762,7 @@ if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run(
-        "app",
+        "fast_api_stream_milestone_notifcation_from_rtsp:app",
         host="0.0.0.0",
         port=8000,
         ssl_keyfile="/home/ubuntu/certs/privkey.pem",  # Updated path
