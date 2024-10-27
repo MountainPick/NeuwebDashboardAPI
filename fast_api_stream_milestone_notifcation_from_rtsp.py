@@ -762,11 +762,9 @@ if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run(
-        app,
+        "app",
         host="0.0.0.0",
         port=8000,
-        ws_ping_interval=30,  # Ping interval to keep the connection alive
-        ws_ping_timeout=120,  # Timeout before closing an inactive connection
-        ws_max_size=16777216,  # Increase max message size if needed
-        log_level="info",
+        ssl_keyfile="/etc/letsencrypt/live/fapi.neuwebtech.com/privkey.pem",
+        ssl_certfile="/etc/letsencrypt/live/fapi.neuwebtech.com/fullchain.pem",
     )
