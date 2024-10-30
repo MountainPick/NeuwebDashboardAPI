@@ -123,7 +123,7 @@ async def process_frame(frame):
                 "image": img_base64,
                 "token": token,
                 "return_processed_image": False,
-                "subscriptionplan_id": 15,
+                "subscriptionplan_id": 3,
             }
         )
 
@@ -258,8 +258,8 @@ async def stream_processor():
                     "camera_id": camera_id,
                     "image": img_base64,
                     "return_processed_image": False,
-                    "subscriptionplan_id": 15,
-                    "threat_recognition_threshold": 0.05,
+                    "subscriptionplan_id": 3,
+                    "threat_recognition_threshold": 0.15,
                 }
             )
             # Capture the start time
