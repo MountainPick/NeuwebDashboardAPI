@@ -248,8 +248,7 @@ async def reconnect_rtsp(cap):
 
 
 # Modify the capture_frames function
-def capture_frames():
-    nonlocal cap
+def capture_frames(cap):
     global latest_frame
     consecutive_failures = 0
 
@@ -317,7 +316,7 @@ async def stream_processor():
                 continue  # Retry connection
 
             # Start the frame capture thread
-            frame_thread = threading.Thread(target=capture_frames)
+            frame_thread = threading.Thread(target=capture_frames, args=(cap,))
             frame_thread.daemon = True
             frame_thread.start()
 
@@ -918,6 +917,6 @@ if __name__ == "__main__":
         "fast_api_stream_milestone_notifcation_from_rtsp:app",
         host="0.0.0.0",
         port=8000,
-        ssl_keyfile="/home/ubuntu/certs/privkey.pem",  # Updated path
-        ssl_certfile="/home/ubuntu/certs/fullchain.pem",  # Updated path
+        # ssl_keyfile="/home/ubuntu/certs/privkey.pem",  # Updated path
+        # ssl_certfile="/home/ubuntu/certs/fullchain.pem",  # Updated path
     )
