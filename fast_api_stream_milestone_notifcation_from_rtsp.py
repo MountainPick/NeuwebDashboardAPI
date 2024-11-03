@@ -32,13 +32,21 @@ import threading
 app = FastAPI()
 logger = logging.getLogger(__name__)
 
-# Update CORS middleware
+# Update CORS middleware with specific origins and additional headers
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, replace with specific origins
+    allow_origins=["https://app.neuwebtech.com"],  # Specify the exact origin
     allow_credentials=True,
-    allow_methods=["*"],  # Allows all methods
-    allow_headers=["*"],  # Allows all headers
+    allow_methods=[
+        "GET",
+        "POST",
+        "PUT",
+        "DELETE",
+        "OPTIONS",
+    ],  # Specify allowed methods
+    allow_headers=["*"],  # You can also specify exact headers if needed
+    expose_headers=["*"],  # Add this if you need to expose specific headers
+    max_age=3600,  # Add cache duration for preflight requests
 )
 
 # Model WebSocket URL for sending frames
