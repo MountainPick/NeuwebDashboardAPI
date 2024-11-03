@@ -75,6 +75,11 @@ frame_lock = threading.Lock()
 # Add global variable for subscription ID
 SUBSCRIPTION_ID = 3  # Default to Dangerous Goods Truck Detection
 
+# Add new constants for retry settings
+MAX_RETRIES = 3
+RETRY_DELAY = 5  # seconds
+RECONNECT_DELAY = 10  # seconds
+
 
 # Login to obtain the authentication token
 def login_to_get_token(username, password, url):
@@ -212,193 +217,305 @@ async def reconnect_model_ws():
         ws_model = None
 
 
+async def reconnect_rtsp(cap):
+    """Attempt to reconnect to the RTSP stream"""
+    logger.info("Attempting to reconnect to RTSP stream...")
+    retry_count = 0
+
+    while retry_count < MAX_RETRIES:
+        try:
+            if cap.isOpened():
+                cap.release()
+
+            new_cap = cv2.VideoCapture(rtsp_url)
+            if new_cap.isOpened():
+                logger.info("Successfully reconnected to RTSP stream")
+                return new_cap
+
+            retry_count += 1
+            logger.warning(
+                f"Retry {retry_count}/{MAX_RETRIES} failed. Waiting {RETRY_DELAY} seconds..."
+            )
+            await asyncio.sleep(RETRY_DELAY)
+
+        except Exception as e:
+            logger.error(f"Error during RTSP reconnection attempt: {e}")
+            retry_count += 1
+            await asyncio.sleep(RETRY_DELAY)
+
+    logger.error("Failed to reconnect to RTSP stream after maximum retries")
+    return None
+
+
+# Modify the capture_frames function
+def capture_frames():
+    nonlocal cap
+    global latest_frame
+    consecutive_failures = 0
+
+    while True:
+        try:
+            if not cap.isOpened():
+                logger.error("RTSP connection lost")
+                # Use asyncio.run_coroutine_threadsafe to call the async reconnect function
+                loop = asyncio.get_event_loop()
+                future = asyncio.run_coroutine_threadsafe(reconnect_rtsp(cap), loop)
+                new_cap = future.result()
+
+                if new_cap is not None:
+                    cap = new_cap
+                    consecutive_failures = 0
+                else:
+                    logger.error("Failed to reconnect, waiting before next attempt")
+                    time.sleep(RECONNECT_DELAY)
+                    continue
+
+            ret, frame = cap.read()
+            if not ret:
+                consecutive_failures += 1
+                logger.warning(
+                    f"Failed to read frame. Consecutive failures: {consecutive_failures}"
+                )
+
+                if consecutive_failures >= 3:
+                    logger.error("Multiple consecutive frame read failures")
+                    # Trigger reconnection
+                    cap.release()
+                    continue
+
+                time.sleep(0.1)
+                continue
+
+            # Reset failure counter on successful frame read
+            consecutive_failures = 0
+
+            # Resize to HD
+            frame = cv2.resize(frame, (1280, 720))
+            with frame_lock:
+                latest_frame = frame
+
+        except Exception as e:
+            logger.error(f"Error in capture_frames: {e}")
+            time.sleep(1)
+
+
 async def stream_processor():
     global latest_frame, ws_model, processed_frame, SUBSCRIPTION_ID
     logger.info("Starting stream processor")
 
-    # websocket_url = f"ws://{neuweb_IP}:{port}/ws/process-stream-image?token={token}"
     websocket_url = f"wss://{neuweb_IP}/ws/process-stream-image?token={token}"
 
-    try:
-        ws_model = websocket.WebSocket()
-        ws_model.connect(websocket_url)
-        cap = cv2.VideoCapture(rtsp_url)
-        if not cap.isOpened():
-            logger.error("Error: Unable to open RTSP stream.")
-            return
+    while True:  # Add outer loop for continuous retry
+        try:
+            ws_model = websocket.WebSocket()
+            ws_model.connect(websocket_url)
+            cap = cv2.VideoCapture(rtsp_url)
 
-        # Function to capture frames continuously
-        def capture_frames():
-            nonlocal cap
-            global latest_frame
-            while cap.isOpened():
-                ret, frame = cap.read()
-                if not ret:
-                    break
-                # Resize to HD
-                frame = cv2.resize(frame, (1280, 720))
+            if not cap.isOpened():
+                logger.error("Error: Unable to open RTSP stream.")
+                await asyncio.sleep(RECONNECT_DELAY)
+                continue  # Retry connection
+
+            # Start the frame capture thread
+            frame_thread = threading.Thread(target=capture_frames)
+            frame_thread.daemon = True
+            frame_thread.start()
+
+            frame_number = 0
+            latest_noti = None
+
+            # Wait until we have at least one frame
+            while True:
                 with frame_lock:
-                    latest_frame = frame
+                    if latest_frame is not None:
+                        break
+                await asyncio.sleep(0.01)
 
-        # Start the frame capture thread
-        frame_thread = threading.Thread(target=capture_frames)
-        frame_thread.daemon = True
-        frame_thread.start()
+            while True:
+                with frame_lock:
+                    frame = latest_frame.copy()
 
-        frame_number = 0
-        latest_noti = None
-
-        # Wait until we have at least one frame
-        while True:
-            with frame_lock:
-                if latest_frame is not None:
-                    break
-            await asyncio.sleep(0.01)
-
-        while True:
-            with frame_lock:
-                frame = latest_frame.copy()
-
-            _, img_encoded = cv2.imencode(".jpg", frame)
-            img_bytes = img_encoded.tobytes()
-            img_base64 = base64.b64encode(img_bytes).decode("utf-8")
-            message = json.dumps(
-                {
-                    "token": token,
-                    "camera_id": camera_id,
-                    "image": img_base64,
-                    "return_processed_image": False,
-                    "subscriptionplan_id": SUBSCRIPTION_ID,
-                    "threat_recognition_threshold": 0.15,
-                }
-            )
-            # Capture the start time
-            start_time = time.time()
-            ws_model.send(message)
-            response = ws_model.recv()
-            # Capture the end time
-            end_time = time.time()
-            response_json = json.loads(response)
-            logger.debug(response_json)
-            logger.debug(f"Time taken: {end_time - start_time}")
-
-            # Parse the response and add text overlay
-            frame_results = response_json.get("frame_results", {})
-            if len(frame_results.get("notification", [])) > 0:
-                latest_noti = frame_results["notification"][0]["content"]
-                noti_time = time.time()
-                # Convert to datetime YY-MM-DD HH:MM:SS
-                noti_time = datetime.fromtimestamp(noti_time).strftime(
-                    "%H:%M:%S %d-%m-%Y"
+                _, img_encoded = cv2.imencode(".jpg", frame)
+                img_bytes = img_encoded.tobytes()
+                img_base64 = base64.b64encode(img_bytes).decode("utf-8")
+                message = json.dumps(
+                    {
+                        "token": token,
+                        "camera_id": camera_id,
+                        "image": img_base64,
+                        "return_processed_image": False,
+                        "subscriptionplan_id": SUBSCRIPTION_ID,
+                        "threat_recognition_threshold": 0.15,
+                    }
                 )
-            if latest_noti is not None:
-                # add text overlay
+                # Capture the start time
+                start_time = time.time()
+                ws_model.send(message)
+                response = ws_model.recv()
+                # Capture the end time
+                end_time = time.time()
+                response_json = json.loads(response)
+                logger.debug(response_json)
+                logger.debug(f"Time taken: {end_time - start_time}")
+
+                # Parse the response and add text overlay
+                frame_results = response_json.get("frame_results", {})
+
+                # Add vehicle count and dangerous signs detection when subscription_id is 3
+                if SUBSCRIPTION_ID == 3:
+                    vehicle_count = frame_results.get(
+                        "vehicle_count", []
+                    )  # [[class, count], ...]
+                    dangerous_signs = frame_results.get(
+                        "dangerous_signs", []
+                    )  # [[datetime, [signs]], ...]
+
+                    # Display vehicle counts
+                    if len(vehicle_count) > 0:
+                        for idx, (cls, count) in enumerate(vehicle_count):
+                            cv2.putText(
+                                frame,
+                                f"{cls}: {count}",
+                                (20, 40 + 40 * idx),
+                                cv2.FONT_HERSHEY_COMPLEX,
+                                1,
+                                (0, 255, 0),
+                                3,
+                            )
+                            cur_y = 80 + 80 * idx
+
+                        # Display dangerous signs
+                        for idx, (dt, signs) in enumerate(dangerous_signs):
+                            cv2.putText(
+                                frame,
+                                f"{dt}: {'+'.join(signs)}",
+                                (20, cur_y + 40 + 40 * idx),
+                                cv2.FONT_HERSHEY_COMPLEX,
+                                1,
+                                (0, 0, 255),
+                                3,
+                            )
+
+                # Continue with existing notification and tracking box code
+                if len(frame_results.get("notification", [])) > 0:
+                    latest_noti = frame_results["notification"][0]["content"]
+                    noti_time = time.time()
+                    # Convert to datetime YY-MM-DD HH:MM:SS
+                    noti_time = datetime.fromtimestamp(noti_time).strftime(
+                        "%H:%M:%S %d-%m-%Y"
+                    )
+                if latest_noti is not None:
+                    # add text overlay
+                    cv2.putText(
+                        frame,
+                        f"Notification: {latest_noti}",
+                        (10, 70),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        1,
+                        (0, 0, 255),
+                        2,
+                    )
+                    # add time overlay
+                    cv2.putText(
+                        frame,
+                        f"{noti_time}",
+                        (10, 110),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        1,
+                        (0, 0, 255),
+                        2,
+                    )
+                num_human_tracks = frame_results.get("num_human_tracks", 0)
+                human_tracked_boxes = frame_results.get("human_tracked_boxes", [])
+                object_tracked_boxes = frame_results.get("object_tracked_boxes", [])
+                if object_tracked_boxes is not None:
+                    for obj in object_tracked_boxes:
+                        track_box = obj.get("track_box")
+                        track_id = obj.get("track_name", "N/A")
+                        if track_box:
+                            x1, y1, x2, y2 = map(int, track_box)
+                            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                            label = f"{track_id}"
+                            (label_width, label_height), _ = cv2.getTextSize(
+                                label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1
+                            )
+                            cv2.rectangle(
+                                frame,
+                                (x1, y1 - label_height - 5),
+                                (x1 + label_width, y1),
+                                (0, 255, 0),
+                                -1,
+                            )
+                            cv2.putText(
+                                frame,
+                                label,
+                                (x1, y1 - 5),
+                                cv2.FONT_HERSHEY_SIMPLEX,
+                                0.5,
+                                (255, 255, 255),
+                                1,
+                            )
+                # Add bounding boxes and labels for tracked humans
+                if human_tracked_boxes is not None:
+                    for human in human_tracked_boxes:
+                        track_box = human.get("track_box")
+                        track_id = human.get("track_name", "N/A")
+                        if track_box:
+                            x1, y1, x2, y2 = map(int, track_box)
+                            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
+                            label = f"{track_id}"
+                            (label_width, label_height), _ = cv2.getTextSize(
+                                label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1
+                            )
+                            cv2.rectangle(
+                                frame,
+                                (x1, y1 - label_height - 5),
+                                (x1 + label_width, y1),
+                                (0, 0, 255),
+                                -1,
+                            )
+                            cv2.putText(
+                                frame,
+                                label,
+                                (x1, y1 - 5),
+                                cv2.FONT_HERSHEY_SIMPLEX,
+                                0.5,
+                                (255, 255, 255),
+                                1,
+                            )
+                # Add total people count
                 cv2.putText(
                     frame,
-                    f"Notification: {latest_noti}",
-                    (10, 70),
+                    f"People: {num_human_tracks}",
+                    (10, 30),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     1,
-                    (0, 0, 255),
+                    (0, 255, 0),
                     2,
                 )
-                # add time overlay
-                cv2.putText(
-                    frame,
-                    f"{noti_time}",
-                    (10, 110),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    1,
-                    (0, 0, 255),
-                    2,
+                print("frame number", frame_number)
+
+                _, buffer = cv2.imencode(".jpg", frame)
+                processed_frame = base64.b64encode(buffer).decode("utf-8")
+
+                # Calculate the time difference in milliseconds
+                duration_ms = (end_time - start_time) * 1000
+                logger.debug(
+                    f"Time taken for frame {frame_number}: {duration_ms:.2f} ms"
                 )
-            num_human_tracks = frame_results.get("num_human_tracks", 0)
-            human_tracked_boxes = frame_results.get("human_tracked_boxes", [])
-            object_tracked_boxes = frame_results.get("object_tracked_boxes", [])
-            if object_tracked_boxes is not None:
-                for obj in object_tracked_boxes:
-                    track_box = obj.get("track_box")
-                    track_id = obj.get("track_name", "N/A")
-                    if track_box:
-                        x1, y1, x2, y2 = map(int, track_box)
-                        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                        label = f"{track_id}"
-                        (label_width, label_height), _ = cv2.getTextSize(
-                            label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1
-                        )
-                        cv2.rectangle(
-                            frame,
-                            (x1, y1 - label_height - 5),
-                            (x1 + label_width, y1),
-                            (0, 255, 0),
-                            -1,
-                        )
-                        cv2.putText(
-                            frame,
-                            label,
-                            (x1, y1 - 5),
-                            cv2.FONT_HERSHEY_SIMPLEX,
-                            0.5,
-                            (255, 255, 255),
-                            1,
-                        )
-            # Add bounding boxes and labels for tracked humans
-            if human_tracked_boxes is not None:
-                for human in human_tracked_boxes:
-                    track_box = human.get("track_box")
-                    track_id = human.get("track_name", "N/A")
-                    if track_box:
-                        x1, y1, x2, y2 = map(int, track_box)
-                        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
-                        label = f"{track_id}"
-                        (label_width, label_height), _ = cv2.getTextSize(
-                            label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1
-                        )
-                        cv2.rectangle(
-                            frame,
-                            (x1, y1 - label_height - 5),
-                            (x1 + label_width, y1),
-                            (0, 0, 255),
-                            -1,
-                        )
-                        cv2.putText(
-                            frame,
-                            label,
-                            (x1, y1 - 5),
-                            cv2.FONT_HERSHEY_SIMPLEX,
-                            0.5,
-                            (255, 255, 255),
-                            1,
-                        )
-            # Add total people count
-            cv2.putText(
-                frame,
-                f"People: {num_human_tracks}",
-                (10, 30),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                1,
-                (0, 255, 0),
-                2,
-            )
-            print("frame number", frame_number)
+                frame_number += 1
 
-            _, buffer = cv2.imencode(".jpg", frame)
-            processed_frame = base64.b64encode(buffer).decode("utf-8")
+                await asyncio.sleep(0.01)  # Small delay to prevent blocking
 
-            # Calculate the time difference in milliseconds
-            duration_ms = (end_time - start_time) * 1000
-            logger.debug(f"Time taken for frame {frame_number}: {duration_ms:.2f} ms")
-            frame_number += 1
+        except Exception as e:
+            logger.error(f"Error in stream processor: {e}", exc_info=True)
+            await asyncio.sleep(RECONNECT_DELAY)  # Wait before retrying
 
-            await asyncio.sleep(0.01)  # Small delay to prevent blocking
-
-    except Exception as e:
-        logger.error(f"Error in stream processor: {e}", exc_info=True)
-    finally:
-        if cap.isOpened():
-            cap.release()
-        if ws_model:
-            ws_model.close()
+        finally:
+            if "cap" in locals() and cap.isOpened():
+                cap.release()
+            if "ws_model" in locals() and ws_model:
+                ws_model.close()
 
 
 # Store active connections
@@ -487,8 +604,8 @@ class MilestoneConnectRequest(BaseModel):
 
 def init_db():
     # Drop the database file if it exists
-    if os.path.exists("./notifications.db"):
-        os.remove("./notifications.db")
+    # if os.path.exists("./notifications.db"):
+    #     os.remove("./notifications.db")
 
     # Create all tables
     Base.metadata.create_all(bind=engine)
