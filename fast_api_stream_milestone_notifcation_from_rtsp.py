@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 # Update CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allows all origins
+    allow_origins=["*"],  # In production, replace with specific origins
     allow_credentials=True,
     allow_methods=["*"],  # Allows all methods
     allow_headers=["*"],  # Allows all headers
@@ -72,6 +72,9 @@ rtsp_url = "rtsp://root:Admin1234@100.91.128.124/axis-media/media.amp"
 latest_frame = None
 frame_lock = threading.Lock()
 
+# Add global variable for subscription ID
+SUBSCRIPTION_ID = 3  # Default to Dangerous Goods Truck Detection
+
 
 # Login to obtain the authentication token
 def login_to_get_token(username, password, url):
@@ -97,7 +100,13 @@ neuweb_ws_url = f"wss://{neuweb_IP}/ws/process-stream-image?token={token}"
 
 
 async def process_frame(frame):
-    global ws_model, last_sent_time, processed_frame, frame_counter, last_processed_time
+    global \
+        ws_model, \
+        last_sent_time, \
+        processed_frame, \
+        frame_counter, \
+        last_processed_time, \
+        SUBSCRIPTION_ID
     current_time = time.time()
 
     frame_counter = (frame_counter + 1) % (FRAME_SKIP + 1)
@@ -123,7 +132,8 @@ async def process_frame(frame):
                 "image": img_base64,
                 "token": token,
                 "return_processed_image": False,
-                "subscriptionplan_id": 3,
+                "subscriptionplan_id": SUBSCRIPTION_ID,
+                "threat_recognition_threshold": 0.15,
             }
         )
 
@@ -203,7 +213,7 @@ async def reconnect_model_ws():
 
 
 async def stream_processor():
-    global latest_frame, ws_model, processed_frame
+    global latest_frame, ws_model, processed_frame, SUBSCRIPTION_ID
     logger.info("Starting stream processor")
 
     # websocket_url = f"ws://{neuweb_IP}:{port}/ws/process-stream-image?token={token}"
@@ -258,7 +268,7 @@ async def stream_processor():
                     "camera_id": camera_id,
                     "image": img_base64,
                     "return_processed_image": False,
-                    "subscriptionplan_id": 3,
+                    "subscriptionplan_id": SUBSCRIPTION_ID,
                     "threat_recognition_threshold": 0.15,
                 }
             )
@@ -756,6 +766,32 @@ async def send_frames():
             start_time = current_time  # Reset start time after saving
 
         await asyncio.sleep(frame_time)
+
+
+@app.post("/update_detection_mode")
+async def update_detection_mode(data: dict = Body(...)):
+    global SUBSCRIPTION_ID
+    try:
+        camera_id = data.get("camera_id")
+        subscription_id = data.get("subscription_id")
+
+        if not camera_id or subscription_id is None:
+            raise HTTPException(status_code=400, detail="Missing required fields")
+
+        # Update the global subscription ID
+        SUBSCRIPTION_ID = subscription_id
+
+        logger.info(
+            f"Updated detection mode for camera {camera_id} to subscription ID {subscription_id}"
+        )
+        return {
+            "status": "success",
+            "message": f"Detection mode updated for camera {camera_id}",
+        }
+
+    except Exception as e:
+        logger.error(f"Error updating detection mode: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 if __name__ == "__main__":

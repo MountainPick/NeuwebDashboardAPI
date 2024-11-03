@@ -270,9 +270,10 @@ if __name__ == "__main__":
     if "access_token" in login_response:
         TOKEN = login_response["access_token"]
         CAMERA_ID = 1  # Replace with your camera ID
-        VIDEO_PATH = "fire.mp4"  # Replace with the path to your video file
+        # VIDEO_PATH = "fire.mp4"  # Replace with the path to your video file
         # VIDEO_PATH = "rtsp://tho:Ldtho1610@100.82.206.126/axis-media/media.amp"
         # VIDEO_PATH = 0  # Uncomment if you want to use the default camera
+        VIDEO_PATH = "rtsp://root:Admin1234@100.91.128.124/axis-media/media.amp"
         # Stream video
         print("Streaming video...")
         use_async = False  # Set this to True if you want to use the asyncio method
