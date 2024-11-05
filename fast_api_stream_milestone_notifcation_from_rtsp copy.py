@@ -28,9 +28,6 @@ import websocket
 import numpy as np
 import requests
 import threading
-import nest_asyncio
-from collections import OrderedDict
-import queue
 
 app = FastAPI()
 logger = logging.getLogger(__name__)
@@ -90,18 +87,6 @@ SUBSCRIPTION_ID = 3  # Default to Dangerous Goods Truck Detection
 MAX_RETRIES = 3
 RETRY_DELAY = 5  # seconds
 RECONNECT_DELAY = 10  # seconds
-
-# Apply the nest_asyncio patch
-nest_asyncio.apply()
-
-# Add these global variables
-sent_frames = OrderedDict()
-sent_frames_lock = threading.Lock()
-frame_queue = queue.Queue(maxsize=10)
-stop_event = threading.Event()
-desired_fps = 30
-model_fps = 10
-frame_delay = 1.0 / desired_fps
 
 
 # Login to obtain the authentication token
@@ -322,10 +307,10 @@ def capture_frames(cap):
 
 
 async def stream_processor():
-    global latest_frame, ws_model, processed_frame, SUBSCRIPTION_ID, stop_event
+    global latest_frame, ws_model, processed_frame, SUBSCRIPTION_ID
     logger.info("Starting stream processor")
 
-    websocket_url = f"wss://{neuweb_IP}/ws/process-stream-image-async?token={token}"
+    websocket_url = f"wss://{neuweb_IP}/ws/process-stream-image?token={token}"
 
     while True:  # Add outer loop for continuous retry
         try:
@@ -336,19 +321,15 @@ async def stream_processor():
             if not cap.isOpened():
                 logger.error("Error: Unable to open RTSP stream.")
                 await asyncio.sleep(RECONNECT_DELAY)
-                continue
+                continue  # Retry connection
 
             # Start the frame capture thread
             frame_thread = threading.Thread(target=capture_frames, args=(cap,))
             frame_thread.daemon = True
             frame_thread.start()
 
-            # Start the frame sending thread
-            send_thread = threading.Thread(target=send_frames)
-            send_thread.daemon = True
-            send_thread.start()
-
             frame_number = 0
+            latest_noti = None
 
             # Wait until we have at least one frame
             while True:
@@ -357,160 +338,191 @@ async def stream_processor():
                         break
                 await asyncio.sleep(0.01)
 
-            while not stop_event.is_set():
-                try:
-                    response = ws_model.recv()
-                    if response:
-                        response_json = json.loads(response)
-                        frame_number = response_json.get("frame_number")
+            while True:
+                with frame_lock:
+                    frame = latest_frame.copy()
 
-                        with sent_frames_lock:
-                            frame_data = sent_frames.pop(frame_number, None)
-                            if frame_data is not None:
-                                frame, frame_timestamp = frame_data
-                                # Clean up older frames
-                                keys_to_delete = [
-                                    key
-                                    for key in sent_frames.keys()
-                                    if key < frame_number
-                                ]
-                                for key in keys_to_delete:
-                                    del sent_frames[key]
-                            else:
-                                frame = None
+                _, img_encoded = cv2.imencode(".jpg", frame)
+                img_bytes = img_encoded.tobytes()
+                img_base64 = base64.b64encode(img_bytes).decode("utf-8")
+                message = json.dumps(
+                    {
+                        "token": token,
+                        "camera_id": camera_id,
+                        "image": img_base64,
+                        "return_processed_image": False,
+                        "subscriptionplan_id": SUBSCRIPTION_ID,
+                        "threat_recognition_threshold": 0.15,
+                    }
+                )
+                # Capture the start time
+                start_time = time.time()
+                ws_model.send(message)
+                response = ws_model.recv()
+                # Capture the end time
+                end_time = time.time()
+                response_json = json.loads(response)
+                logger.debug(response_json)
+                logger.debug(f"Time taken: {end_time - start_time}")
 
-                        if frame is not None:
-                            processed_frame = process_response(
-                                frame, response_json.get("frame_results")
+                # Parse the response and add text overlay
+                frame_results = response_json.get("frame_results", {})
+
+                # Add vehicle count and dangerous signs detection when subscription_id is 3
+                if SUBSCRIPTION_ID == 3:
+                    vehicle_count = frame_results.get(
+                        "vehicle_count", []
+                    )  # [[class, count], ...]
+                    dangerous_signs = frame_results.get(
+                        "dangerous_signs", []
+                    )  # [[datetime, [signs]], ...]
+
+                    # Display vehicle counts
+                    if len(vehicle_count) > 0:
+                        for idx, (cls, count) in enumerate(vehicle_count):
+                            cv2.putText(
+                                frame,
+                                f"{cls}: {count}",
+                                (20, 40 + 40 * idx),
+                                cv2.FONT_HERSHEY_COMPLEX,
+                                1,
+                                (0, 255, 0),
+                                3,
                             )
-                        else:
-                            logger.warning(
-                                f"No frame found for frame_number {frame_number}"
+                            cur_y = 80 + 80 * idx
+
+                        # Display dangerous signs
+                        for idx, (dt, signs) in enumerate(dangerous_signs):
+                            cv2.putText(
+                                frame,
+                                f"{dt}: {'+'.join(signs)}",
+                                (20, cur_y + 40 + 40 * idx),
+                                cv2.FONT_HERSHEY_COMPLEX,
+                                1,
+                                (0, 0, 255),
+                                3,
                             )
 
-                except Exception as e:
-                    logger.error(f"Error in receive loop: {e}")
-                    break
+                # Continue with existing notification and tracking box code
+                if len(frame_results.get("notification", [])) > 0:
+                    latest_noti = frame_results["notification"][0]["content"]
+                    noti_time = time.time()
+                    # Convert to datetime YY-MM-DD HH:MM:SS
+                    noti_time = datetime.fromtimestamp(noti_time).strftime(
+                        "%H:%M:%S %d-%m-%Y"
+                    )
+                if latest_noti is not None:
+                    # add text overlay
+                    cv2.putText(
+                        frame,
+                        f"Notification: {latest_noti}",
+                        (10, 70),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        1,
+                        (0, 0, 255),
+                        2,
+                    )
+                    # add time overlay
+                    cv2.putText(
+                        frame,
+                        f"{noti_time}",
+                        (10, 110),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        1,
+                        (0, 0, 255),
+                        2,
+                    )
+                num_human_tracks = frame_results.get("num_human_tracks", 0)
+                human_tracked_boxes = frame_results.get("human_tracked_boxes", [])
+                object_tracked_boxes = frame_results.get("object_tracked_boxes", [])
+                if object_tracked_boxes is not None:
+                    for obj in object_tracked_boxes:
+                        track_box = obj.get("track_box")
+                        track_id = obj.get("track_name", "N/A")
+                        if track_box:
+                            x1, y1, x2, y2 = map(int, track_box)
+                            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                            label = f"{track_id}"
+                            (label_width, label_height), _ = cv2.getTextSize(
+                                label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1
+                            )
+                            cv2.rectangle(
+                                frame,
+                                (x1, y1 - label_height - 5),
+                                (x1 + label_width, y1),
+                                (0, 255, 0),
+                                -1,
+                            )
+                            cv2.putText(
+                                frame,
+                                label,
+                                (x1, y1 - 5),
+                                cv2.FONT_HERSHEY_SIMPLEX,
+                                0.5,
+                                (255, 255, 255),
+                                1,
+                            )
+                # Add bounding boxes and labels for tracked humans
+                if human_tracked_boxes is not None:
+                    for human in human_tracked_boxes:
+                        track_box = human.get("track_box")
+                        track_id = human.get("track_name", "N/A")
+                        if track_box:
+                            x1, y1, x2, y2 = map(int, track_box)
+                            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
+                            label = f"{track_id}"
+                            (label_width, label_height), _ = cv2.getTextSize(
+                                label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1
+                            )
+                            cv2.rectangle(
+                                frame,
+                                (x1, y1 - label_height - 5),
+                                (x1 + label_width, y1),
+                                (0, 0, 255),
+                                -1,
+                            )
+                            cv2.putText(
+                                frame,
+                                label,
+                                (x1, y1 - 5),
+                                cv2.FONT_HERSHEY_SIMPLEX,
+                                0.5,
+                                (255, 255, 255),
+                                1,
+                            )
+                # Add total people count
+                cv2.putText(
+                    frame,
+                    f"People: {num_human_tracks}",
+                    (10, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    1,
+                    (0, 255, 0),
+                    2,
+                )
+                print("frame number", frame_number)
 
-                await asyncio.sleep(0.01)
+                _, buffer = cv2.imencode(".jpg", frame)
+                processed_frame = base64.b64encode(buffer).decode("utf-8")
+
+                # Calculate the time difference in milliseconds
+                duration_ms = (end_time - start_time) * 1000
+                logger.debug(
+                    f"Time taken for frame {frame_number}: {duration_ms:.2f} ms"
+                )
+                frame_number += 1
+
+                await asyncio.sleep(0.01)  # Small delay to prevent blocking
 
         except Exception as e:
             logger.error(f"Error in stream processor: {e}", exc_info=True)
-            await asyncio.sleep(RECONNECT_DELAY)
+            await asyncio.sleep(RECONNECT_DELAY)  # Wait before retrying
 
         finally:
-            stop_event.set()
             if "cap" in locals() and cap.isOpened():
                 cap.release()
             if "ws_model" in locals() and ws_model:
                 ws_model.close()
-
-
-def send_frames():
-    global latest_frame, ws_model, sent_frames
-    frame_number = 0
-
-    while not stop_event.is_set():
-        try:
-            frame, frame_timestamp = frame_queue.get(timeout=5)
-        except queue.Empty:
-            continue
-
-        try:
-            _, img_encoded = cv2.imencode(".jpg", frame)
-            img_bytes = img_encoded.tobytes()
-            img_base64 = base64.b64encode(img_bytes).decode("utf-8")
-
-            message = json.dumps(
-                {
-                    "token": token,
-                    "camera_id": camera_id,
-                    "image": img_base64,
-                    "return_processed_image": False,
-                    "subscriptionplan_id": SUBSCRIPTION_ID,
-                    "threat_recognition_threshold": 0.15,
-                    "fps": model_fps,
-                    "frame_number": frame_number,
-                    "timestamp": frame_timestamp,
-                }
-            )
-
-            ws_model.send(message)
-            with sent_frames_lock:
-                sent_frames[frame_number] = (frame.copy(), frame_timestamp)
-                while len(sent_frames) > 30:  # Keep last 30 frames
-                    sent_frames.popitem(first=True)
-
-        except Exception as e:
-            logger.error(f"Error sending frame: {e}")
-            stop_event.set()
-            break
-
-        frame_number += 1
-        frame_queue.task_done()
-        time.sleep(frame_delay)
-
-
-def process_response(frame, frame_results):
-    """Process the response and add visualizations to the frame"""
-    if frame_results is None:
-        return frame
-
-    # Get detection results
-    num_human_tracks = frame_results.get("num_human_tracks", 0)
-    human_tracked_boxes = frame_results.get("human_tracked_boxes", [])
-    notification_data = frame_results.get("notification", [])
-
-    # Draw bounding boxes for tracked humans
-    if human_tracked_boxes is not None:
-        for human in human_tracked_boxes:
-            track_box = human.get("track_box")
-            track_id = human.get("track_id", "N/A")
-            if track_box:
-                x1, y1, x2, y2 = map(int, track_box)
-                # Draw bounding box
-                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
-
-                # Add track ID label
-                label = f"ID: {track_id}"
-                (label_width, label_height), _ = cv2.getTextSize(
-                    label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1
-                )
-                # Draw label background
-                cv2.rectangle(
-                    frame,
-                    (x1, y1 - label_height - 5),
-                    (x1 + label_width, y1),
-                    (0, 0, 255),
-                    -1,
-                )
-                # Draw label text
-                cv2.putText(
-                    frame,
-                    label,
-                    (x1, y1 - 5),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.5,
-                    (255, 255, 255),
-                    1,
-                )
-
-    # Add people count to frame
-    cv2.putText(
-        frame,
-        f"People: {num_human_tracks}",
-        (10, 30),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        1,
-        (0, 255, 0),
-        2,
-    )
-
-    # Encode the processed frame
-    _, buffer = cv2.imencode(".jpg", frame)
-    processed_frame = base64.b64encode(buffer).decode("utf-8")
-
-    return processed_frame
 
 
 # Store active connections
@@ -913,6 +925,6 @@ if __name__ == "__main__":
         "fast_api_stream_milestone_notifcation_from_rtsp:app",
         host="0.0.0.0",
         port=8000,
-        # ssl_keyfile="/home/ubuntu/certs/privkey.pem",  # Updated path
-        # ssl_certfile="/home/ubuntu/certs/fullchain.pem",  # Updated path
+        ssl_keyfile="/home/ubuntu/certs/privkey.pem",  # Updated path
+        ssl_certfile="/home/ubuntu/certs/fullchain.pem",  # Updated path
     )

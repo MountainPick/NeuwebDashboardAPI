@@ -28,7 +28,7 @@ nest_asyncio.apply()
 
 ws_IP = "api.neuwebtech.com"
 API_BASE_URL = f"https://{ws_IP}"
-WEBSOCKET_BASE_URL = f"wss://{ws_IP}/ws/process-stream-image"
+
 
 # Add at the top with other global variables
 ALL_TIME_DANGEROUS_SIGNS = []
@@ -259,11 +259,12 @@ def stream_video_sync(token, camera_id, video_path):
 
 
 def stream_video_async(token, camera_id, video_path):
-    websocket_url = f"{WEBSOCKET_BASE_URL_ASYNC}?token={token}"
+    websocket_url = f"{WEBSOCKET_BASE_URL}?token={token}"
 
     try:
         ws = websocket.WebSocket()
         ws.connect(websocket_url)
+        print("Connected to WebSocket")
 
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
@@ -271,47 +272,37 @@ def stream_video_async(token, camera_id, video_path):
             return
 
         stop_event = threading.Event()
-        frame_queue = queue.Queue(maxsize=10)  # Adjust maxsize as needed
-        desired_fps = 50
+        frame_queue = queue.Queue(maxsize=10)
+        desired_fps = 30
         model_fps = 10
         frame_delay = 1.0 / desired_fps
 
-        # Initialize the sent_frames OrderedDict and lock
         sent_frames = OrderedDict()
         sent_frames_lock = threading.Lock()
 
-        # Thread to capture frames and put them into the queue
         def capture_frames():
             while not stop_event.is_set():
                 ret, frame = cap.read()
                 if not ret:
                     break
-                # Resize to HD
-                # frame = cv2.resize(frame, (1280, 720))
-                frame_timestamp = (
-                    time.time()
-                )  # Record the timestamp when the frame is captured
+                frame_timestamp = time.time()
                 try:
-                    frame_queue.put(
-                        (frame, frame_timestamp), timeout=1
-                    )  # Put both frame and timestamp in the queue
+                    frame_queue.put((frame, frame_timestamp), timeout=1)
                 except queue.Full:
-                    continue  # Skip frame if queue is full
+                    continue
                 time.sleep(frame_delay)
 
-        # Thread to send frames from the queue to the server
         def send_frames():
             frame_number = 0
             while not stop_event.is_set():
                 try:
                     frame, frame_timestamp = frame_queue.get(timeout=5)
                 except queue.Empty:
-                    break  # No frames available, exit loop
+                    break
 
                 _, img_encoded = cv2.imencode(".jpg", frame)
                 img_bytes = img_encoded.tobytes()
                 img_base64 = base64.b64encode(img_bytes).decode("utf-8")
-                # Add a timestamp to the message
 
                 message = json.dumps(
                     {
@@ -323,25 +314,25 @@ def stream_video_async(token, camera_id, video_path):
                         "threat_recognition_threshold": 0.15,
                         "fps": model_fps,
                         "frame_number": frame_number,
-                        "timestamp": frame_timestamp,  # Add timestamp here
+                        "timestamp": frame_timestamp,
                     }
                 )
+
                 try:
                     ws.send(message)
+                    with sent_frames_lock:
+                        sent_frames[frame_number] = (frame.copy(), frame_timestamp)
+                        while len(sent_frames) > 30:
+                            sent_frames.popitem(first=True)
                 except Exception as e:
                     print(f"Error sending frame: {e}")
                     stop_event.set()
                     break
 
-                # Store the frame with frame_number and timestamp
-                with sent_frames_lock:
-                    sent_frames[frame_number] = (frame.copy(), frame_timestamp)
-
                 frame_number += 1
                 frame_queue.task_done()
-                time.sleep(frame_delay)  # Control frame rate
+                time.sleep(frame_delay)
 
-        # Thread to receive and process responses from the server
         def receive_responses():
             while not stop_event.is_set():
                 try:
@@ -351,11 +342,9 @@ def stream_video_async(token, camera_id, video_path):
                         frame_number = response_json.get("frame_number")
 
                         with sent_frames_lock:
-                            # Retrieve the corresponding frame
                             frame_data = sent_frames.pop(frame_number, None)
                             if frame_data is not None:
                                 frame, frame_timestamp = frame_data
-                                # Delete frames with frame numbers less than the received frame_number
                                 keys_to_delete = [
                                     key
                                     for key in sent_frames.keys()
@@ -376,25 +365,22 @@ def stream_video_async(token, camera_id, video_path):
                                 break
                         else:
                             print(f"No frame found for frame_number {frame_number}")
-                        print(f"Received response for frame {frame_number}")
                 except Exception as e:
                     print(f"Error receiving response: {e}")
                     stop_event.set()
                     break
 
-        # Start the threads
-        capture_thread = threading.Thread(target=capture_frames)
-        send_thread = threading.Thread(target=send_frames)
-        receive_thread = threading.Thread(target=receive_responses)
+        threads = [
+            threading.Thread(target=capture_frames),
+            threading.Thread(target=send_frames),
+            threading.Thread(target=receive_responses),
+        ]
 
-        capture_thread.start()
-        send_thread.start()
-        receive_thread.start()
+        for thread in threads:
+            thread.start()
 
-        # Wait for threads to finish
-        capture_thread.join()
-        send_thread.join()
-        receive_thread.join()
+        for thread in threads:
+            thread.join()
 
         cap.release()
         ws.close()
@@ -563,14 +549,7 @@ if __name__ == "__main__":
         CAMERA_ID = 1  # Replace with your camera ID
         VIDEO_PATH = "rtsp://root:Admin1234@100.91.128.124/axis-media/media.amp"
 
-        print("Streaming video...")
-        use_async = True  # Changed to True to use async by default
-
-        if use_async:
-            print("Streaming video asynchronously...")
-            stream_video_async(TOKEN, CAMERA_ID, VIDEO_PATH)
-        else:
-            print("Streaming video synchronously...")
-            stream_video_sync(TOKEN, CAMERA_ID, VIDEO_PATH)
+        print("Streaming video asynchronously...")
+        stream_video_async(TOKEN, CAMERA_ID, VIDEO_PATH)
     else:
         print("Error: Could not obtain access token.")
