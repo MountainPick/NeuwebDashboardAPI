@@ -380,7 +380,7 @@ async def stream_processor():
                                 frame = None
 
                         if frame is not None:
-                            processed_frame = process_response(
+                            processed_frame = visualize_frame(
                                 frame, response_json.get("frame_results")
                             )
                         else:
@@ -404,6 +404,133 @@ async def stream_processor():
                 cap.release()
             if "ws_model" in locals() and ws_model:
                 ws_model.close()
+
+
+def visualize_frame(frame, frame_results):
+    """Process the response and add visualizations to the frame"""
+    if frame_results is None:
+        return frame
+
+    # Get detection results
+    num_human_tracks = frame_results.get("num_human_tracks", 0)
+    human_tracked_boxes = frame_results.get("human_tracked_boxes", [])
+    object_tracked_boxes = frame_results.get("object_tracked_boxes", [])
+    vehicle_count = frame_results.get("vehicle_count", [])
+    dangerous_signs = frame_results.get("dangerous_signs", [])
+    notification_data = frame_results.get("notification", [])
+
+    # Add notification if available
+    if len(notification_data) > 0:
+        latest_noti = notification_data[0]["content"]
+        noti_time = datetime.now().strftime("%H:%M:%S %d-%m-%Y")
+        cv2.putText(
+            frame,
+            f"Notification: {latest_noti}",
+            (10, 70),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            1,
+            (0, 0, 255),
+            2,
+        )
+        cv2.putText(
+            frame,
+            f"{noti_time}",
+            (10, 110),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            1,
+            (0, 0, 255),
+            2,
+        )
+
+    # Draw vehicle counts
+    if vehicle_count:
+        cur_y = 0
+        for idx, (cls, count) in enumerate(vehicle_count):
+            cv2.putText(
+                frame,
+                f"{cls}: {count}",
+                (20, 40 + 40 * idx),
+                cv2.FONT_HERSHEY_COMPLEX,
+                1,
+                (0, 255, 0),
+                3,
+            )
+            cur_y = 80 + 80 * idx
+
+    # Draw object boxes
+    if object_tracked_boxes is not None:
+        for obj in object_tracked_boxes:
+            track_box = obj.get("track_box")
+            track_id = obj.get("track_name", "N/A")
+            if track_box:
+                x1, y1, x2, y2 = map(int, track_box)
+                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                label = f"{track_id}"
+                (label_width, label_height), _ = cv2.getTextSize(
+                    label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1
+                )
+                cv2.rectangle(
+                    frame,
+                    (x1, y1 - label_height - 5),
+                    (x1 + label_width, y1),
+                    (0, 255, 0),
+                    -1,
+                )
+                cv2.putText(
+                    frame,
+                    label,
+                    (x1, y1 - 5),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    (255, 255, 255),
+                    1,
+                )
+
+    # Draw human boxes
+    if human_tracked_boxes is not None:
+        for human in human_tracked_boxes:
+            track_box = human.get("track_box")
+            track_id = human.get("track_name", "N/A")
+            if track_box:
+                x1, y1, x2, y2 = map(int, track_box)
+                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
+                label = f"{track_id}"
+                (label_width, label_height), _ = cv2.getTextSize(
+                    label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1
+                )
+                cv2.rectangle(
+                    frame,
+                    (x1, y1 - label_height - 5),
+                    (x1 + label_width, y1),
+                    (0, 0, 255),
+                    -1,
+                )
+                cv2.putText(
+                    frame,
+                    label,
+                    (x1, y1 - 5),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    (255, 255, 255),
+                    1,
+                )
+
+    # Add total people count
+    cv2.putText(
+        frame,
+        f"People: {num_human_tracks}" if num_human_tracks > 0 else "",
+        (10, 30),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        1,
+        (0, 255, 0),
+        2,
+    )
+
+    # Encode the processed frame
+    _, buffer = cv2.imencode(".jpg", frame)
+    processed_frame = base64.b64encode(buffer).decode("utf-8")
+
+    return processed_frame
 
 
 def send_frames():
@@ -449,68 +576,6 @@ def send_frames():
         frame_number += 1
         frame_queue.task_done()
         time.sleep(frame_delay)
-
-
-def process_response(frame, frame_results):
-    """Process the response and add visualizations to the frame"""
-    if frame_results is None:
-        return frame
-
-    # Get detection results
-    num_human_tracks = frame_results.get("num_human_tracks", 0)
-    human_tracked_boxes = frame_results.get("human_tracked_boxes", [])
-    notification_data = frame_results.get("notification", [])
-
-    # Draw bounding boxes for tracked humans
-    if human_tracked_boxes is not None:
-        for human in human_tracked_boxes:
-            track_box = human.get("track_box")
-            track_id = human.get("track_id", "N/A")
-            if track_box:
-                x1, y1, x2, y2 = map(int, track_box)
-                # Draw bounding box
-                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
-
-                # Add track ID label
-                label = f"ID: {track_id}"
-                (label_width, label_height), _ = cv2.getTextSize(
-                    label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1
-                )
-                # Draw label background
-                cv2.rectangle(
-                    frame,
-                    (x1, y1 - label_height - 5),
-                    (x1 + label_width, y1),
-                    (0, 0, 255),
-                    -1,
-                )
-                # Draw label text
-                cv2.putText(
-                    frame,
-                    label,
-                    (x1, y1 - 5),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.5,
-                    (255, 255, 255),
-                    1,
-                )
-
-    # Add people count to frame
-    cv2.putText(
-        frame,
-        f"People: {num_human_tracks}",
-        (10, 30),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        1,
-        (0, 255, 0),
-        2,
-    )
-
-    # Encode the processed frame
-    _, buffer = cv2.imencode(".jpg", frame)
-    processed_frame = base64.b64encode(buffer).decode("utf-8")
-
-    return processed_frame
 
 
 # Store active connections
@@ -914,6 +979,6 @@ if __name__ == "__main__":
         host="0.0.0.0",
         port=8000,
         loop="asyncio",  # Force use of default asyncio loop instead of uvloop
-        ssl_keyfile="/home/ubuntu/certs/privkey.pem",  # Updated path
-        ssl_certfile="/home/ubuntu/certs/fullchain.pem",  # Updated path
+        # ssl_keyfile="/home/ubuntu/certs/privkey.pem",  # Updated path
+        # ssl_certfile="/home/ubuntu/certs/fullchain.pem",  # Updated path
     )
