@@ -913,6 +913,7 @@ if __name__ == "__main__":
         "fast_api_stream_milestone_notifcation_from_rtsp:app",
         host="0.0.0.0",
         port=8000,
-        # ssl_keyfile="/home/ubuntu/certs/privkey.pem",  # Updated path
-        # ssl_certfile="/home/ubuntu/certs/fullchain.pem",  # Updated path
+        loop="asyncio",  # Force use of default asyncio loop instead of uvloop
+        ssl_keyfile="/home/ubuntu/certs/privkey.pem",  # Updated path
+        ssl_certfile="/home/ubuntu/certs/fullchain.pem",  # Updated path
     )
