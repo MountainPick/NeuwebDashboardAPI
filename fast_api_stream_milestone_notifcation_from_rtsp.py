@@ -801,11 +801,14 @@ async def startup_event():
 
 if __name__ == "__main__":
     import uvicorn
+    import asyncio
 
+    # Configure uvicorn to use standard asyncio instead of uvloop
     uvicorn.run(
         "fast_api_stream_milestone_notifcation_from_rtsp:app",
         host="0.0.0.0",
         port=8000,
-        ssl_keyfile="/home/ubuntu/certs/privkey.pem",  # Updated path
-        ssl_certfile="/home/ubuntu/certs/fullchain.pem",  # Updated path
+        ssl_keyfile="/home/ubuntu/certs/privkey.pem",
+        ssl_certfile="/home/ubuntu/certs/fullchain.pem",
+        loop="asyncio",  # Add this line to use standard asyncio instead of uvloop
     )
