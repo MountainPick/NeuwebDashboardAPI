@@ -67,10 +67,12 @@ app.add_middleware(
 # Store active WebSocket connections
 active_connections: set[WebSocket] = set()
 latest_frame = None  # Global variable to store the latest frame
+latest_processed_frame = None
 
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
+    global latest_processed_frame
     print("New WebSocket connection request received")
     await websocket.accept()
     print("WebSocket connection accepted")
@@ -83,12 +85,14 @@ async def websocket_endpoint(websocket: WebSocket):
                 # Keep the connection alive with a ping/pong mechanism
                 await websocket.send_json({"type": "ping"})
 
-                # If there's a latest frame available, send it
-                if latest_frame is not None:
-                    await websocket.send_json({"type": "frame", "frame": latest_frame})
+                # If there's a latest processed frame available, send it
+                if latest_processed_frame is not None:
+                    await websocket.send_json(
+                        {"type": "frame", "frame": latest_processed_frame}
+                    )
 
                 # Small delay to prevent overwhelming the connection
-                await asyncio.sleep(0.01)  # Adjust this value based on your needs
+                await asyncio.sleep(0.01)
 
             except Exception as e:
                 print(f"WebSocket error: {e}")
@@ -98,26 +102,6 @@ async def websocket_endpoint(websocket: WebSocket):
         print(
             f"Connection closed. Remaining active connections: {len(active_connections)}"
         )
-
-
-async def broadcast_frame(frame_data: str):
-    """Broadcast frame to all connected clients"""
-    global latest_frame
-    latest_frame = frame_data  # Store the latest frame
-
-    # Create a copy of the set to avoid modification during iteration
-    connections = active_connections.copy()
-
-    disconnected = set()
-    for connection in connections:
-        try:
-            await connection.send_json({"type": "frame", "frame": frame_data})
-        except Exception as e:
-            print(f"Error sending frame: {e}")
-            disconnected.add(connection)
-
-    # Remove disconnected clients
-    active_connections.difference_update(disconnected)
 
 
 def sign_up(
@@ -299,21 +283,13 @@ def stream_video_async(token, camera_id, video_path):
                                     if frame is not None:
                                         try:
                                             # Visualize the frame with detection results
-                                            processed_frame = visualize_frame(
+                                            global latest_processed_frame
+                                            latest_processed_frame = visualize_frame(
                                                 frame.copy(),
                                                 response_json.get("frame_results"),
                                             )
-
-                                            # Convert the processed frame to base64
-                                            # frame_base64 = base64.b64encode(
-                                            #     cv2.imencode(".jpg", processed_frame)[1]
-                                            # ).decode("utf-8")
-
-                                            loop.run_until_complete(
-                                                broadcast_frame(processed_frame)
-                                            )
                                         except Exception as e:
-                                            print(f"Error broadcasting frame: {e}")
+                                            print(f"Error processing frame: {e}")
                                             continue
 
                     except websocket.WebSocketConnectionClosedException:
