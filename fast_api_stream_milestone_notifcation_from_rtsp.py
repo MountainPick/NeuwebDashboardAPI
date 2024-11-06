@@ -1,409 +1,366 @@
-from fastapi import FastAPI, WebSocket, HTTPException, Depends, Body, Query
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-import asyncio
-import json
-import random
-import cv2
 import base64
+import json
 import time
+from collections import OrderedDict
+import cv2
+import nest_asyncio
+import requests
+import websocket
+import threading
+import queue
+from fastapi import FastAPI, WebSocket
+import uvicorn
+from typing import Dict
+import asyncio
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi import Body, HTTPException
+import logging
 from sqlalchemy import (
     create_engine,
     Column,
     Integer,
     String,
     DateTime,
-    UniqueConstraint,
     LargeBinary,
+    UniqueConstraint,
 )
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
+from pydantic import BaseModel, EmailStr
+from typing import List
+import os
 from datetime import datetime
 
-import os
-import logging
-from pydantic import BaseModel, EmailStr  # Import EmailStr for email validation
-from typing import List
-import websocket
-import numpy as np
-import requests
-import threading
-import nest_asyncio
-from collections import OrderedDict
-import queue
 
-app = FastAPI()
 logger = logging.getLogger(__name__)
 
-# Update CORS middleware with specific origins and additional headers
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["https://app.neuwebtech.com"],  # Specify the exact origin
-    allow_credentials=True,
-    allow_methods=[
-        "GET",
-        "POST",
-        "PUT",
-        "DELETE",
-        "OPTIONS",
-    ],  # Specify allowed methods
-    allow_headers=["*"],  # You can also specify exact headers if needed
-    expose_headers=["*"],  # Add this if you need to expose specific headers
-    max_age=3600,  # Add cache duration for preflight requests
-)
+app = FastAPI()
 
-# Model WebSocket URL for sending frames
-# neuweb_IP = "52.63.219.76"
-neuweb_IP = "api.neuwebtech.com"
-
-port = 8000
-camera_id = 1
-
-# Variables to track frames and time
-frame_count = 0
-start_time = 0
-last_sent_time = 0
-SEND_INTERVAL = 0  # Adjust this value to control sending rate
-
-# Global variables for WebSocket connections
-ws_model = None
-processed_frame = None
-
-# Add these global variables
-FRAME_SKIP = 2  # Process every 3rd frame
-frame_counter = 0
-last_processed_time = time.time()
-PROCESS_INTERVAL = 0.1  # Minimum time between processing frames
-
-# RTSP stream URL
-# rtsp_url = "rtsp://tho:Ldtho1610@100.82.206.126/axis-media/media.amp"
-rtsp_url = "rtsp://root:Admin1234@100.91.128.124/axis-media/media.amp"
-
-# Global variables
-latest_frame = None
-frame_lock = threading.Lock()
-
-# Add global variable for subscription ID
-SUBSCRIPTION_ID = 3  # Default to Dangerous Goods Truck Detection
-
-# Add new constants for retry settings
-MAX_RETRIES = 3
-RETRY_DELAY = 5  # seconds
-RECONNECT_DELAY = 10  # seconds
-
-# Apply the nest_asyncio patch
+ALL_TIME_DANGEROUS_SIGNS = []
 nest_asyncio.apply()
 
-# Add these global variables
-sent_frames = OrderedDict()
-sent_frames_lock = threading.Lock()
-frame_queue = queue.Queue(maxsize=10)
-stop_event = threading.Event()
-desired_fps = 30
-model_fps = 10
-frame_delay = 1.0 / desired_fps
+# neuweb_IP = "api.neuwebtech.com"
+ws_IP = "api.neuwebtech.com"
+API_BASE_URL = f"https://{ws_IP}"
+WEBSOCKET_BASE_URL = f"wss://{ws_IP}/ws/process-stream-image"
+WEBSOCKET_BASE_URL_ASYNC = f"wss://{ws_IP}/ws/process-stream-image-async"
+# ws_IP = "54.252.71.145"
+# # ws_IP = "172.22.22.7"
+# # ws_IP = "0.0.0.0"
+# # ws_IP = "3.24.124.52"
+# API_BASE_URL = f"http://{ws_IP}:8000"
+# WEBSOCKET_BASE_URL = f"ws://{ws_IP}:8000/ws/process-stream-image"
+# WEBSOCKET_BASE_URL_ASYNC = f"ws://{ws_IP}:8000/ws/process-stream-image-async"
+
+# Global video stream state
+stream_states: Dict[int, Dict] = {}
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # In production, replace with your frontend domain
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Store active WebSocket connections
+active_connections: set[WebSocket] = set()
+latest_frame = None  # Global variable to store the latest frame
 
 
-# Login to obtain the authentication token
-def login_to_get_token(username, password, url):
-    """Log in to the server and get the authentication token"""
-    logger.info(f"Attempting to login and get token from {url}")
-    response = requests.post(
-        f"{url}/token", data={"username": username, "password": password}
-    )
-    response_data = response.json()
-    logger.info("Successfully obtained token")
-    return response_data["access_token"]
-
-
-# Token retrieval (replace with your actual username, password, and server URL)
-username = "test"  # Replace with your actual username
-password = "test"  # Replace with your actual password
-# token = login_to_get_token(username, password, f"http://{neuweb_IP}:{port}")
-token = login_to_get_token(username, password, f"https://{neuweb_IP}")
-
-# Model WebSocket URL
-# neuweb_ws_url = f"ws://{neuweb_IP}:{port}/ws/process-stream-image?token={token}"
-neuweb_ws_url = f"wss://{neuweb_IP}/ws/process-stream-image?token={token}"
-
-
-async def process_frame(frame):
-    global \
-        ws_model, \
-        last_sent_time, \
-        processed_frame, \
-        frame_counter, \
-        last_processed_time, \
-        SUBSCRIPTION_ID
-    current_time = time.time()
-
-    frame_counter = (frame_counter + 1) % (FRAME_SKIP + 1)
-    if frame_counter != 0:
-        return  # Skip this frame
-
-    if current_time - last_processed_time < PROCESS_INTERVAL:
-        return  # Don't process frames too frequently
-
-    last_processed_time = current_time
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    print("New WebSocket connection request received")
+    await websocket.accept()
+    print("WebSocket connection accepted")
+    active_connections.add(websocket)
+    print(f"Active connections: {len(active_connections)}")
 
     try:
-        # Resize the frame to reduce processing time
-        frame = cv2.resize(frame, (640, 480))
+        while True:
+            try:
+                # Keep the connection alive with a ping/pong mechanism
+                await websocket.send_json({"type": "ping"})
 
-        encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 50]
-        _, img_encoded = cv2.imencode(".jpg", frame, encode_param)
-        img_bytes = img_encoded.tobytes()
-        img_base64 = base64.b64encode(img_bytes).decode("utf-8")
-        message = json.dumps(
-            {
-                "camera_id": camera_id,
-                "image": img_base64,
-                "token": token,
-                "return_processed_image": False,
-                "subscriptionplan_id": SUBSCRIPTION_ID,
-                "threat_recognition_threshold": 0.15,
-            }
+                # If there's a latest frame available, send it
+                if latest_frame is not None:
+                    await websocket.send_json({"type": "frame", "frame": latest_frame})
+
+                # Small delay to prevent overwhelming the connection
+                await asyncio.sleep(0.01)  # Adjust this value based on your needs
+
+            except Exception as e:
+                print(f"WebSocket error: {e}")
+                break
+    finally:
+        active_connections.remove(websocket)
+        print(
+            f"Connection closed. Remaining active connections: {len(active_connections)}"
         )
 
-        ws_model.send(message)
-        logger.debug("Sent frame to model WebSocket")
-        response = ws_model.recv()
-        logger.debug("Received response from model WebSocket")
-        response_data = json.loads(response)
-        frame_results = response_data.get("frame_results", {})
-        num_human_tracks = frame_results.get("num_human_tracks", 0)
-        human_tracked_boxes = frame_results.get("human_tracked_boxes", [])
-        notification_data = frame_results.get("notification", [])
-        print(notification_data)
 
-        if human_tracked_boxes is not None:
-            for human in human_tracked_boxes:
-                track_box = human.get("track_box")
-                track_id = human.get("track_id", "N/A")
-                if track_box:
-                    x1, y1, x2, y2 = map(int, track_box)
-                    cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
-                    label = f"ID: {track_id}"
-                    (label_width, label_height), _ = cv2.getTextSize(
-                        label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1
-                    )
-                    cv2.rectangle(
-                        frame,
-                        (x1, y1 - label_height - 5),
-                        (x1 + label_width, y1),
-                        (0, 0, 255),
-                        -1,
-                    )
-                    cv2.putText(
-                        frame,
-                        label,
-                        (x1, y1 - 5),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.5,
-                        (255, 255, 255),
-                        1,
-                    )
+async def broadcast_frame(frame_data: str):
+    """Broadcast frame to all connected clients"""
+    global latest_frame
+    latest_frame = frame_data  # Store the latest frame
 
-        cv2.putText(
-            frame,
-            f"People: {num_human_tracks}",
-            (10, 30),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            1,
-            (0, 255, 0),
-            2,
-        )
+    disconnected = set()
+    for connection in active_connections:
+        try:
+            await connection.send_json({"type": "frame", "frame": frame_data})
+        except Exception as e:
+            print(f"Error sending frame: {e}")
+            disconnected.add(connection)
 
-        _, buffer = cv2.imencode(".jpg", frame)
-        processed_frame = base64.b64encode(buffer).decode("utf-8")
-        logger.debug(f"Processed frame with {num_human_tracks} people detected")
-
-    except Exception as e:
-        logger.error(f"Error processing model response: {e}")
-        await reconnect_model_ws()
+    # Remove disconnected clients
+    for connection in disconnected:
+        active_connections.remove(connection)
 
 
-async def reconnect_model_ws():
-    global ws_model
-    try:
-        if ws_model:
-            ws_model.close()
-    except:
-        pass
-    await asyncio.sleep(5)
-    logger.info("Reconnecting to model WebSocket...")
-    try:
-        ws_model = websocket.create_connection(neuweb_ws_url)
-        logger.info("Reconnected to model WebSocket")
-    except Exception as e:
-        logger.error(f"Failed to reconnect to model WebSocket: {e}")
-        ws_model = None
+def sign_up(
+    username,
+    password,
+    firstname,
+    lastname,
+    email,
+    phonenumber,
+    emergencycontact,
+    subscriptionplan_id,
+):
+    sign_up_url = f"{API_BASE_URL}/signup"
+    user_data = {
+        "username": username,
+        "password": password,
+        "firstname": firstname,
+        "middlename": "",
+        "lastname": lastname,
+        "email": email,
+        "phonenumber": phonenumber,
+        "emergencycontact": emergencycontact,
+        "subscriptionplan_id": subscriptionplan_id,
+    }
+    response = requests.post(sign_up_url, json=user_data)
+    return response.json()
 
 
-async def reconnect_rtsp(cap):
-    """Attempt to reconnect to the RTSP stream"""
-    logger.info("Attempting to reconnect to RTSP stream...")
+def login_to_get_token(username, password):
+    login_url = f"{API_BASE_URL}/token"
+    form_data = {"grant_type": "password", "username": username, "password": password}
+    response = requests.post(login_url, data=form_data)
+    return response.json()
+
+
+def stream_video_async(token, camera_id, video_path):
+    websocket_url = f"{WEBSOCKET_BASE_URL_ASYNC}?token={token}"
+    max_retries = 3
+    retry_delay = 5  # seconds
     retry_count = 0
 
-    while retry_count < MAX_RETRIES:
+    def connect_websocket():
         try:
-            if cap.isOpened():
-                cap.release()
-
-            new_cap = cv2.VideoCapture(rtsp_url)
-            if new_cap.isOpened():
-                logger.info("Successfully reconnected to RTSP stream")
-                return new_cap
-
-            retry_count += 1
-            logger.warning(
-                f"Retry {retry_count}/{MAX_RETRIES} failed. Waiting {RETRY_DELAY} seconds..."
-            )
-            await asyncio.sleep(RETRY_DELAY)
-
+            ws = websocket.WebSocket()
+            ws.connect(websocket_url)
+            print("WebSocket connected successfully")
+            return ws
         except Exception as e:
-            logger.error(f"Error during RTSP reconnection attempt: {e}")
-            retry_count += 1
-            await asyncio.sleep(RETRY_DELAY)
+            print(f"Failed to connect WebSocket: {e}")
+            return None
 
-    logger.error("Failed to reconnect to RTSP stream after maximum retries")
-    return None
-
-
-# Modify the capture_frames function
-def capture_frames(cap):
-    global latest_frame
-    consecutive_failures = 0
-
-    while True:
+    while retry_count < max_retries:
         try:
+            ws = connect_websocket()
+            if not ws:
+                raise Exception("Failed to establish WebSocket connection")
+
+            cap = cv2.VideoCapture(video_path)
             if not cap.isOpened():
-                logger.error("RTSP connection lost")
-                # Use asyncio.run_coroutine_threadsafe to call the async reconnect function
-                loop = asyncio.get_event_loop()
-                future = asyncio.run_coroutine_threadsafe(reconnect_rtsp(cap), loop)
-                new_cap = future.result()
+                print("Error: Could not open video file.")
+                return
 
-                if new_cap is not None:
-                    cap = new_cap
-                    consecutive_failures = 0
-                else:
-                    logger.error("Failed to reconnect, waiting before next attempt")
-                    time.sleep(RECONNECT_DELAY)
-                    continue
+            stop_event = threading.Event()
+            frame_queue = queue.Queue(maxsize=10)  # Adjust maxsize as needed
+            desired_fps = 50
+            model_fps = 10
+            frame_delay = 1.0 / desired_fps
+            reconnect_event = threading.Event()
 
-            ret, frame = cap.read()
-            if not ret:
-                consecutive_failures += 1
-                logger.warning(
-                    f"Failed to read frame. Consecutive failures: {consecutive_failures}"
-                )
+            # Initialize the sent_frames OrderedDict and lock
+            sent_frames = OrderedDict()
+            sent_frames_lock = threading.Lock()
 
-                if consecutive_failures >= 3:
-                    logger.error("Multiple consecutive frame read failures")
-                    # Trigger reconnection
-                    cap.release()
-                    continue
-
-                time.sleep(0.1)
-                continue
-
-            # Reset failure counter on successful frame read
-            consecutive_failures = 0
-
-            # Resize to HD
-            frame = cv2.resize(frame, (1280, 720))
-            with frame_lock:
-                latest_frame = frame
-
-        except Exception as e:
-            logger.error(f"Error in capture_frames: {e}")
-            time.sleep(1)
-
-
-async def stream_processor():
-    global latest_frame, ws_model, processed_frame, SUBSCRIPTION_ID, stop_event
-    logger.info("Starting stream processor")
-
-    websocket_url = f"wss://{neuweb_IP}/ws/process-stream-image-async?token={token}"
-
-    while True:  # Add outer loop for continuous retry
-        try:
-            ws_model = websocket.WebSocket()
-            ws_model.connect(websocket_url)
-            cap = cv2.VideoCapture(rtsp_url)
-
-            if not cap.isOpened():
-                logger.error("Error: Unable to open RTSP stream.")
-                await asyncio.sleep(RECONNECT_DELAY)
-                continue
-
-            # Start the frame capture thread
-            frame_thread = threading.Thread(target=capture_frames, args=(cap,))
-            frame_thread.daemon = True
-            frame_thread.start()
-
-            # Start the frame sending thread
-            send_thread = threading.Thread(target=send_frames)
-            send_thread.daemon = True
-            send_thread.start()
-
-            frame_number = 0
-
-            # Wait until we have at least one frame
-            while True:
-                with frame_lock:
-                    if latest_frame is not None:
+            # Thread to capture frames and put them into the queue
+            def capture_frames():
+                while not stop_event.is_set():
+                    ret, frame = cap.read()
+                    if not ret:
                         break
-                await asyncio.sleep(0.01)
+                    # Resize to HD
+                    # frame = cv2.resize(frame, (1280, 720))
+                    frame_timestamp = (
+                        time.time()
+                    )  # Record the timestamp when the frame is captured
+                    try:
+                        frame_queue.put(
+                            (frame, frame_timestamp), timeout=1
+                        )  # Put both frame and timestamp in the queue
+                    except queue.Full:
+                        continue  # Skip frame if queue is full
+                    time.sleep(frame_delay)
 
-            while not stop_event.is_set():
-                try:
-                    response = ws_model.recv()
-                    if response:
-                        response_json = json.loads(response)
-                        frame_number = response_json.get("frame_number")
+            # Thread to send frames from the queue to the server
+            def send_frames():
+                frame_number = 0
+                while not stop_event.is_set():
+                    try:
+                        frame, frame_timestamp = frame_queue.get(timeout=5)
+                    except queue.Empty:
+                        continue
 
-                        with sent_frames_lock:
-                            frame_data = sent_frames.pop(frame_number, None)
-                            if frame_data is not None:
-                                frame, frame_timestamp = frame_data
-                                # Clean up older frames
-                                keys_to_delete = [
-                                    key
-                                    for key in sent_frames.keys()
-                                    if key < frame_number
-                                ]
-                                for key in keys_to_delete:
-                                    del sent_frames[key]
+                    while True:  # Keep trying to send the frame until successful
+                        if reconnect_event.is_set():
+                            print("Waiting for reconnection...")
+                            time.sleep(1)
+                            continue
+
+                        try:
+                            _, img_encoded = cv2.imencode(".jpg", frame)
+                            img_bytes = img_encoded.tobytes()
+                            img_base64 = base64.b64encode(img_bytes).decode("utf-8")
+
+                            message = json.dumps(
+                                {
+                                    "token": token,
+                                    "camera_id": camera_id,
+                                    "image": img_base64,
+                                    "return_processed_image": False,
+                                    "subscriptionplan_id": 3,
+                                    "threat_recognition_threshold": 0.15,
+                                    "fps": model_fps,
+                                    "frame_number": frame_number,
+                                    "timestamp": frame_timestamp,
+                                }
+                            )
+                            ws.send(message)
+                            break  # Successfully sent the frame, move to next one
+                        except Exception as e:
+                            print(f"Error sending frame: {e}")
+                            reconnect_event.set()
+                            time.sleep(0.1)  # Wait before retry
+
+                    # Store the frame with frame_number and timestamp
+                    with sent_frames_lock:
+                        sent_frames[frame_number] = (frame.copy(), frame_timestamp)
+
+                    frame_number += 1
+                    frame_queue.task_done()
+                    time.sleep(frame_delay)  # Control frame rate
+
+            def receive_responses():
+                nonlocal ws
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+
+                while not stop_event.is_set():
+                    try:
+                        if reconnect_event.is_set():
+                            print("Connection lost, attempting to reconnect...")
+                            ws.close()
+                            new_ws = connect_websocket()
+                            if new_ws:
+                                ws = new_ws
+                                reconnect_event.clear()
+                                print("Successfully reconnected")
                             else:
-                                frame = None
+                                time.sleep(retry_delay)
+                                continue
 
-                        if frame is not None:
-                            processed_frame = visualize_frame(
-                                frame, response_json.get("frame_results")
-                            )
-                        else:
-                            logger.warning(
-                                f"No frame found for frame_number {frame_number}"
-                            )
+                        response = ws.recv()
+                        if response:
+                            response_json = json.loads(response)
+                            frame_number = response_json.get("frame_number")
+                            print(f"Received response for frame {frame_number}")
 
-                except Exception as e:
-                    logger.error(f"Error in receive loop: {e}")
-                    break
+                            with sent_frames_lock:
+                                frame_data = sent_frames.pop(frame_number, None)
+                                if frame_data is not None:
+                                    frame, frame_timestamp = frame_data
+                                    # Clean up older frames
+                                    keys_to_delete = [
+                                        key
+                                        for key in sent_frames.keys()
+                                        if key < frame_number
+                                    ]
+                                    for key in keys_to_delete:
+                                        del sent_frames[key]
 
-                await asyncio.sleep(0.01)
+                                    if frame is not None:
+                                        try:
+                                            # Visualize the frame with detection results
+                                            processed_frame = visualize_frame(
+                                                frame.copy(),
+                                                response_json.get("frame_results"),
+                                            )
+
+                                            # Convert the processed frame to base64
+                                            # frame_base64 = base64.b64encode(
+                                            #     cv2.imencode(".jpg", processed_frame)[1]
+                                            # ).decode("utf-8")
+
+                                            loop.run_until_complete(
+                                                broadcast_frame(processed_frame)
+                                            )
+                                        except Exception as e:
+                                            print(f"Error broadcasting frame: {e}")
+                                            continue
+
+                    except websocket.WebSocketConnectionClosedException:
+                        print("WebSocket connection closed. Attempting to reconnect...")
+                        reconnect_event.set()
+                    except Exception as e:
+                        print(f"Error receiving response: {e}")
+                        reconnect_event.set()
+
+                loop.close()
+
+            # Start the threads
+            capture_thread = threading.Thread(target=capture_frames)
+            send_thread = threading.Thread(target=send_frames)
+            receive_thread = threading.Thread(target=receive_responses)
+
+            capture_thread.start()
+            send_thread.start()
+            receive_thread.start()
+
+            # Wait for threads to finish
+            capture_thread.join()
+            send_thread.join()
+            receive_thread.join()
+
+            break
 
         except Exception as e:
-            logger.error(f"Error in stream processor: {e}", exc_info=True)
-            await asyncio.sleep(RECONNECT_DELAY)
+            print(f"Error in main loop: {e}")
+            retry_count += 1
+            if retry_count < max_retries:
+                print(
+                    f"Retrying in {retry_delay} seconds... (Attempt {retry_count + 1}/{max_retries})"
+                )
+                time.sleep(retry_delay)
+            else:
+                print("Max retries reached. Stopping stream.")
+                break
 
         finally:
             stop_event.set()
-            if "cap" in locals() and cap.isOpened():
-                cap.release()
-            if "ws_model" in locals() and ws_model:
-                ws_model.close()
+            try:
+                if "cap" in locals():
+                    cap.release()
+                if "ws" in locals():
+                    ws.close()
+                cv2.destroyAllWindows()
+            except Exception as e:
+                print(f"Error during cleanup: {e}")
 
 
 def visualize_frame(frame, frame_results):
@@ -533,54 +490,65 @@ def visualize_frame(frame, frame_results):
     return processed_frame
 
 
-def send_frames():
-    global latest_frame, ws_model, sent_frames
-    frame_number = 0
+@app.post("/start_stream/{camera_id}")
+async def start_stream(camera_id: int, token: str, video_path: str):
+    if camera_id in stream_states and stream_states[camera_id].get("running", False):
+        return {"message": f"Stream already running for camera {camera_id}"}
 
-    while not stop_event.is_set():
-        try:
-            frame, frame_timestamp = frame_queue.get(timeout=5)
-        except queue.Empty:
-            continue
+    stream_states[camera_id] = {"running": False}
 
-        try:
-            _, img_encoded = cv2.imencode(".jpg", frame)
-            img_bytes = img_encoded.tobytes()
-            img_base64 = base64.b64encode(img_bytes).decode("utf-8")
+    # Start streaming in a separate thread
+    stream_thread = threading.Thread(
+        target=stream_video_async,
+        args=(token, camera_id, video_path),
+    )
+    stream_thread.start()
 
-            message = json.dumps(
-                {
-                    "token": token,
-                    "camera_id": camera_id,
-                    "image": img_base64,
-                    "return_processed_image": False,
-                    "subscriptionplan_id": SUBSCRIPTION_ID,
-                    "threat_recognition_threshold": 0.15,
-                    "fps": model_fps,
-                    "frame_number": frame_number,
-                    "timestamp": frame_timestamp,
-                }
-            )
-
-            ws_model.send(message)
-            with sent_frames_lock:
-                sent_frames[frame_number] = (frame.copy(), frame_timestamp)
-                while len(sent_frames) > 30:  # Keep last 30 frames
-                    sent_frames.popitem(first=True)
-
-        except Exception as e:
-            logger.error(f"Error sending frame: {e}")
-            stop_event.set()
-            break
-
-        frame_number += 1
-        frame_queue.task_done()
-        time.sleep(frame_delay)
+    return {"message": f"Started streaming for camera {camera_id}"}
 
 
-# Store active connections
-active_connections: list[WebSocket] = []
-latest_frame = None  # Global variable to store the latest frame
+@app.post("/stop_stream/{camera_id}")
+async def stop_stream(camera_id: int):
+    if camera_id not in stream_states:
+        return {"message": f"No stream found for camera {camera_id}"}
+
+    stream_states[camera_id]["running"] = False
+    return {"message": f"Stopped streaming for camera {camera_id}"}
+
+
+@app.get("/stream_status/{camera_id}")
+async def get_stream_status(camera_id: int):
+    if camera_id not in stream_states:
+        return {"status": "No stream found"}
+
+    return {"status": "running" if stream_states[camera_id]["running"] else "stopped"}
+
+
+@app.post("/update_detection_mode")
+async def update_detection_mode(data: dict = Body(...)):
+    global SUBSCRIPTION_ID
+    try:
+        camera_id = data.get("camera_id")
+        subscription_id = data.get("subscription_id")
+
+        if not camera_id or subscription_id is None:
+            raise HTTPException(status_code=400, detail="Missing required fields")
+
+        # Update the global subscription ID
+        SUBSCRIPTION_ID = subscription_id
+
+        logger.info(
+            f"Updated detection mode for camera {camera_id} to subscription ID {subscription_id}"
+        )
+        return {
+            "status": "success",
+            "message": f"Detection mode updated for camera {camera_id}",
+        }
+
+    except Exception as e:
+        logger.error(f"Error updating detection mode: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 # Database setup
 DATABASE_URL = "sqlite:///./notifications.db"
@@ -669,47 +637,6 @@ def init_db():
 
     # Create all tables
     Base.metadata.create_all(bind=engine)
-
-
-@app.on_event("startup")
-async def startup_event():
-    init_db()
-    asyncio.create_task(stream_processor())
-
-
-@app.options("/ws")
-async def options_ws(request):
-    return JSONResponse(status_code=200)
-
-
-# @app.websocket("/ws")
-# async def websocket_stream_endpoint(websocket: WebSocket):
-#     await websocket.accept()
-#     try:
-#         while True:
-#             # Send the latest frame to the connected client
-#             if latest_frame:
-#                 await websocket.send_text(json.dumps(latest_frame))
-#             await asyncio.sleep(1 / 30)  # Adjust frame rate if needed (e.g., 30 FPS)
-#     except:
-#         pass  # Catch all exceptions to prevent crashing
-
-
-@app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
-    await websocket.accept()
-    logger.info("New WebSocket connection accepted")
-    try:
-        while True:
-            if processed_frame:
-                frame_data = {
-                    "type": "frame",
-                    "frame": processed_frame,
-                }
-                await websocket.send_text(json.dumps(frame_data))
-            await asyncio.sleep(0.03)  # Adjust this value to control the frame rate
-    except Exception as e:
-        logger.error(f"Error in WebSocket endpoint: {e}")
 
 
 @app.post("/signup", response_model=UserResponse)
@@ -857,118 +784,19 @@ async def get_notification(camera_id: str, frame_id: int):
         db.close()
 
 
-# Load video
-video = cv2.VideoCapture("fire.mp4")
-fps = video.get(cv2.CAP_PROP_FPS)
-frame_time = 1 / fps
+@app.on_event("startup")
+async def startup_event():
+    # Start streaming for camera 1 with default token and video path
+    camera_id = 1
+    token = login_to_get_token("test", "test")["access_token"]
+    video_path = "rtsp://root:Admin1234@100.91.128.124/axis-media/media.amp"  # Replace with your default video path
 
-
-async def send_frames():
-    global latest_frame  # Use global variable to store the latest frame
-    start_time = time.time()
-    frame_count = 0
-    last_frame_time = time.time()
-
-    while True:
-        current_time = time.time()
-        elapsed_time = current_time - last_frame_time
-
-        # Skip frames if processing is taking longer than real-time
-        frames_to_skip = max(0, int(elapsed_time / frame_time) - 1)
-        for _ in range(frames_to_skip):
-            video.read()
-            frame_count += 1
-
-        success, frame = video.read()
-        if not success:
-            video.set(cv2.CAP_PROP_POS_FRAMES, 0)  # Loop back to the start
-            frame_count = 0
-            continue
-
-        _, buffer = cv2.imencode(".jpg", frame)
-        frame_data = base64.b64encode(buffer).decode("utf-8")
-
-        # Update the global variable with the latest frame
-        latest_frame = {
-            "type": "frame",
-            "frame": frame_data,
-            "frame_id": frame_count,
-        }
-
-        frame_count += 1
-        last_frame_time = current_time
-
-        # Save notification to database after 15 seconds
-        if current_time - start_time > 15:
-            notification = {
-                "type": "notification",
-                "id": random.randint(1, 1000),
-                "title": f"New Notification {random.randint(1, 100)}",
-                "description": "This is a notification sent every 15 seconds.",
-                "avatar": f"https://i.pravatar.cc/150?img={random.randint(1, 70)}",
-                "frame": frame_data,
-                "frame_id": frame_count,
-                "camera": {
-                    "id": "1",
-                    "name": "Front Door Camera",
-                    "location": "Entrance",
-                    "model": "SecureCam Pro",
-                    "status": "Online",
-                    "statusColor": "success.main",
-                    "lastMaintenance": "2023-05-15",
-                },
-            }
-            # Print the notification to the output
-            logging.info(f"Saving notification: {notification}")
-
-            # Save notification to database
-            db = SessionLocal()
-            db_notification = Notification(
-                title=notification["title"],
-                description=notification["description"],
-                avatar=notification["avatar"],
-                camera_id=notification["camera"]["id"],
-                camera_name=notification["camera"]["name"],
-                camera_location=notification["camera"]["location"],
-                camera_model=notification["camera"]["model"],
-                camera_status=notification["camera"]["status"],
-                camera_status_color=notification["camera"]["statusColor"],
-                camera_last_maintenance=notification["camera"]["lastMaintenance"],
-                frame_id=notification["frame_id"],
-                frame_data=buffer.tobytes(),
-            )
-            db.add(db_notification)
-            db.commit()
-            db.close()
-            start_time = current_time  # Reset start time after saving
-
-        await asyncio.sleep(frame_time)
-
-
-@app.post("/update_detection_mode")
-async def update_detection_mode(data: dict = Body(...)):
-    global SUBSCRIPTION_ID
-    try:
-        camera_id = data.get("camera_id")
-        subscription_id = data.get("subscription_id")
-
-        if not camera_id or subscription_id is None:
-            raise HTTPException(status_code=400, detail="Missing required fields")
-
-        # Update the global subscription ID
-        SUBSCRIPTION_ID = subscription_id
-
-        logger.info(
-            f"Updated detection mode for camera {camera_id} to subscription ID {subscription_id}"
-        )
-        return {
-            "status": "success",
-            "message": f"Detection mode updated for camera {camera_id}",
-        }
-
-    except Exception as e:
-        logger.error(f"Error updating detection mode: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    stream_states[camera_id] = {"running": False}
+    stream_thread = threading.Thread(
+        target=stream_video_async,
+        args=(token, camera_id, video_path),
+    )
+    stream_thread.start()
 
 
 if __name__ == "__main__":
@@ -978,7 +806,6 @@ if __name__ == "__main__":
         "fast_api_stream_milestone_notifcation_from_rtsp:app",
         host="0.0.0.0",
         port=8000,
-        loop="asyncio",  # Force use of default asyncio loop instead of uvloop
-        # ssl_keyfile="/home/ubuntu/certs/privkey.pem",  # Updated path
-        # ssl_certfile="/home/ubuntu/certs/fullchain.pem",  # Updated path
+        ssl_keyfile="/home/ubuntu/certs/privkey.pem",  # Updated path
+        ssl_certfile="/home/ubuntu/certs/fullchain.pem",  # Updated path
     )
