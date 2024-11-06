@@ -105,8 +105,11 @@ async def broadcast_frame(frame_data: str):
     global latest_frame
     latest_frame = frame_data  # Store the latest frame
 
+    # Create a copy of the set to avoid modification during iteration
+    connections = active_connections.copy()
+
     disconnected = set()
-    for connection in active_connections:
+    for connection in connections:
         try:
             await connection.send_json({"type": "frame", "frame": frame_data})
         except Exception as e:
@@ -114,8 +117,7 @@ async def broadcast_frame(frame_data: str):
             disconnected.add(connection)
 
     # Remove disconnected clients
-    for connection in disconnected:
-        active_connections.remove(connection)
+    active_connections.difference_update(disconnected)
 
 
 def sign_up(
