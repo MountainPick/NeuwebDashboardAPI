@@ -803,8 +803,8 @@ if __name__ == "__main__":
     uvicorn.run(
         app,
         host="0.0.0.0",
-        port=8000,
+        port=8001,
         loop="asyncio",  # Force use of default asyncio loop instead of uvloop
-        ssl_keyfile="/home/ubuntu/certs/privkey.pem",  # Updated path
-        ssl_certfile="/home/ubuntu/certs/fullchain.pem",  # Updated path
+        # ssl_keyfile="/home/ubuntu/certs/privkey.pem",  # Updated path
+        # ssl_certfile="/home/ubuntu/certs/fullchain.pem",  # Updated path
     )

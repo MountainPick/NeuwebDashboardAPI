@@ -785,8 +785,8 @@ if __name__ == "__main__":
     uvicorn.run(
         "fast_api_stream_milestone_notifcation_from_rtsp:app",
         host="0.0.0.0",
-        port=8000,
-        ssl_keyfile="/home/ubuntu/certs/privkey.pem",
-        ssl_certfile="/home/ubuntu/certs/fullchain.pem",
-        loop="asyncio",  # Add this line to use standard asyncio instead of uvloop
+        port=8001,
+        # ssl_keyfile="/home/ubuntu/certs/privkey.pem",
+        # ssl_certfile="/home/ubuntu/certs/fullchain.pem",
+        # loop="asyncio",  # Add this line to use standard asyncio instead of uvloop
     )
