@@ -922,10 +922,9 @@ if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run(
-        "fast_api_stream_milestone_notifcation_from_rtsp_copy:app",
+        "fast_api_stream_milestone_notifcation_from_rtsp:app",
         host="0.0.0.0",
         port=8000,
-        loop="asyncio",
         ssl_keyfile="/home/ubuntu/certs/privkey.pem",  # Updated path
         ssl_certfile="/home/ubuntu/certs/fullchain.pem",  # Updated path
     )
