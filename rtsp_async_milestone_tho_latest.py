@@ -392,10 +392,10 @@ def stream_video_async(token, camera_id, video_path):
                             visualized_frame = visualize_frame(
                                 frame, response_json.get("frame_results")
                             )
-                            cv2.imshow("Visualized Frame", visualized_frame)
-                            if cv2.waitKey(1) & 0xFF == ord("q"):
-                                stop_event.set()
-                                break
+                            # cv2.imshow("Visualized Frame", visualized_frame)
+                            # if cv2.waitKey(1) & 0xFF == ord("q"):
+                            #     stop_event.set()
+                            #     break
                         else:
                             print(f"No frame found for frame_number {frame_number}")
                         print(f"Received response for frame {frame_number}")
