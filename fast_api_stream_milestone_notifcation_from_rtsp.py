@@ -76,32 +76,14 @@ async def websocket_endpoint(websocket: WebSocket):
     print("New WebSocket connection request received")
     await websocket.accept()
     print("WebSocket connection accepted")
-    active_connections.add(websocket)
-    print(f"Active connections: {len(active_connections)}")
-
     try:
         while True:
-            try:
-                # Keep the connection alive with a ping/pong mechanism
-                await websocket.send_json({"type": "ping"})
-
-                # If there's a latest processed frame available, send it
-                if latest_processed_frame is not None:
-                    await websocket.send_json(
-                        {"type": "frame", "frame": latest_processed_frame}
-                    )
-
-                # Small delay to prevent overwhelming the connection
-                await asyncio.sleep(0.01)
-
-            except Exception as e:
-                print(f"WebSocket error: {e}")
-                break
-    finally:
-        active_connections.remove(websocket)
-        print(
-            f"Connection closed. Remaining active connections: {len(active_connections)}"
-        )
+            if latest_processed_frame:
+                frame_data = {"type": "frame", "frame": latest_processed_frame}
+                await websocket.send_text(json.dumps(frame_data))
+            await asyncio.sleep(0.01)  # Control frame rate
+    except Exception as e:
+        logger.error(f"Error in WebSocket endpoint: {e}")
 
 
 def sign_up(

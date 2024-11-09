@@ -768,7 +768,7 @@ if __name__ == "__main__":
 
     # Configure uvicorn to use standard asyncio instead of uvloop
     uvicorn.run(
-        "fast_api_stream_milestone_notifcation_from_rtsp_with_async:app",
+        "fast_api_stream_milestone_notifcation_from_rtsp:app",
         host="0.0.0.0",
         port=8000,
         ssl_keyfile="/home/ubuntu/certs/privkey.pem",
