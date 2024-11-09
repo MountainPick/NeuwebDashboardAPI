@@ -926,6 +926,6 @@ if __name__ == "__main__":
         host="0.0.0.0",
         port=8000,
         loop="asyncio",
-        # ssl_keyfile="/home/ubuntu/certs/privkey.pem",  # Updated path
-        # ssl_certfile="/home/ubuntu/certs/fullchain.pem",  # Updated path
+        ssl_keyfile="/home/ubuntu/certs/privkey.pem",  # Updated path
+        ssl_certfile="/home/ubuntu/certs/fullchain.pem",  # Updated path
     )
