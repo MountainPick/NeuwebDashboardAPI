@@ -73,28 +73,56 @@ async def get_html():
                 #video {
                     width: 90vw;
                     height: 90vh;
-                    object-fit: cover;
+                    object-fit: contain;
+                    display: none;
                 }
-                h1 {
+                #loginForm {
                     position: absolute;
-                    top: 20px;
-                    left: 20px;
-                    color: white;
-                    text-shadow: 2px 2px 4px rgba(0,0,0,0.5);
-                    margin: 0;
+                    top: 50%;
+                    left: 50%;
+                    transform: translate(-50%, -50%);
+                    padding: 20px;
+                    background: white;
+                    border-radius: 5px;
+                    box-shadow: 0 0 10px rgba(0,0,0,0.1);
+                }
+                .error {
+                    color: red;
+                    display: none;
+                    margin-top: 10px;
                 }
             </style>
         </head>
         <body>
-            <h1>Video Stream</h1>
+            <div id="loginForm">
+                <h2>Login Required</h2>
+                <input type="text" id="username" placeholder="Username" /><br><br>
+                <input type="password" id="password" placeholder="Password" /><br><br>
+                <button onclick="authenticate()">Login</button>
+                <p id="errorMsg" class="error">Invalid credentials</p>
+            </div>
             <img id="video" src="">
             <script>
-                // Use the current host for WebSocket connection
-                const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-                const ws = new WebSocket(`${protocol}//${window.location.host}/ws/video_stream`);
-                ws.onmessage = function(event) {
-                    document.getElementById('video').src = URL.createObjectURL(new Blob([event.data]));
-                };
+                function authenticate() {
+                    const username = document.getElementById('username').value;
+                    const password = document.getElementById('password').value;
+                    
+                    if (username === 'neuweb' && password === 'TechnologyKing#1') {
+                        document.getElementById('loginForm').style.display = 'none';
+                        document.getElementById('video').style.display = 'block';
+                        initializeWebSocket();
+                    } else {
+                        document.getElementById('errorMsg').style.display = 'block';
+                    }
+                }
+
+                function initializeWebSocket() {
+                    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                    const ws = new WebSocket(`${protocol}//${window.location.host}/ws/video_stream`);
+                    ws.onmessage = function(event) {
+                        document.getElementById('video').src = URL.createObjectURL(new Blob([event.data]));
+                    };
+                }
             </script>
         </body>
     </html>
