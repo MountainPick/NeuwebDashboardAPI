@@ -89,9 +89,11 @@ async def get_html():
             <h1>Video Stream</h1>
             <img id="video" src="">
             <script>
-                const ws = new WebSocket("ws://localhost:8000/ws/video_stream");
+                // Use the current host for WebSocket connection
+                const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                const ws = new WebSocket(`${protocol}//${window.location.host}/ws/video_stream`);
                 ws.onmessage = function(event) {
-                    document.getElementById('video').src = URL.createObjectURL(event.data);
+                    document.getElementById('video').src = URL.createObjectURL(new Blob([event.data]));
                 };
             </script>
         </body>
