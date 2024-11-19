@@ -89,7 +89,7 @@ async def get_html():
             <h1>Video Stream</h1>
             <img id="video" src="">
             <script>
-                const ws = new WebSocket("ws://localhost:8001/ws/video_stream");
+                const ws = new WebSocket("ws://localhost:8000/ws/video_stream");
                 ws.onmessage = function(event) {
                     document.getElementById('video').src = URL.createObjectURL(event.data);
                 };
@@ -121,4 +121,4 @@ async def video_stream(websocket: WebSocket):
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=8001)
+    uvicorn.run(app, host="0.0.0.0", port=8000)
